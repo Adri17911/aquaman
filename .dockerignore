@@ -1,0 +1,27 @@
+# Git and IDE
+.git
+.gitignore
+.cursor
+.vscode
+*.bat
+*.ps1
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.venv
+venv
+env
+
+# Frontend (built in image)
+frontend/node_modules
+frontend/dist
+
+# Local data (use volume in Docker)
+aqua.db
+settings.json
+
+# Scripts and docs (optional; keep if you want)
+scripts

@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Local data (each env has its own)
+aqua.db
+settings.json
+
+# IDE / OS
+.idea/
+.vscode/
+.cursor/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
