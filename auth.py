@@ -5,20 +5,25 @@ from __future__ import annotations
 import time
 from typing import Any
 
+import bcrypt
 import jwt
-from passlib.context import CryptContext
 
 from config import load_config
 
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Bcrypt has a 72-byte limit; truncate so long passwords don't raise
+BCRYPT_MAX_PASSWORD_BYTES = 72
+
+
+def _truncate_password(password: str) -> bytes:
+    return password.encode("utf-8")[:BCRYPT_MAX_PASSWORD_BYTES]
 
 
 def hash_password(password: str) -> str:
-    return pwd_ctx.hash(password)
+    return bcrypt.hashpw(_truncate_password(password), bcrypt.gensalt()).decode("ascii")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_ctx.verify(plain, hashed)
+    return bcrypt.checkpw(_truncate_password(plain), hashed.encode("ascii"))
 
 
 def create_access_token(user_id: int, username: str, is_admin: bool) -> str:
