@@ -124,6 +124,34 @@ docker compose up -d
 
 Data is stored in Docker volumes `aqua_data` (DB + settings) and `mosquitto_data`.
 
+### Default admin user (admin / admin)
+
+To create a default admin user (username `admin`, password `admin`) so you can log in without using “Create account”:
+
+**Local (from project root):**
+```bash
+python scripts/create_admin_user.py
+```
+Uses the same database as the app (current dir or `AQUA_DATA_DIR`).
+
+**Docker / Portainer:** Run the script inside the container so it uses the same volume:
+```bash
+docker compose exec aqua python -c "
+import sys; sys.path.insert(0, '/app')
+from auth import hash_password
+from database import db
+db.init()
+u = db.get_user_by_username('admin')
+if u: print('admin already exists')
+else:
+  db.create_user('admin', hash_password('admin'), is_admin=True)
+  print('Created admin/admin')
+"
+```
+Or copy the script into the image and run `python scripts/create_admin_user.py` with `AQUA_DATA_DIR=/data`.
+
+Change the password after first login (Settings → Users).
+
 ### Build only (no compose)
 
 ```bash
