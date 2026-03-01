@@ -62,6 +62,15 @@ function AuthenticatedApp({
                 ))}
               </select>
             )}
+            {apiDevices && apiDevices.length === 0 && !health?.mqtt_connected && (
+              <span className="text-xs text-amber-500">MQTT disconnected — connect broker for devices</span>
+            )}
+            {apiDevices && apiDevices.length === 0 && health?.mqtt_connected && (
+              <span className="text-xs text-slate-500">No devices yet — controller will appear when it sends data, or add in Settings</span>
+            )}
+            {apiDevices && apiDevices.length > 0 && devices && devices.length === 0 && (
+              <span className="text-xs text-slate-500">Enable auto-discovery or add devices in Settings to show them</span>
+            )}
             <span className="text-xs text-slate-500">
               {user.username}
               {user.is_admin ? ' (admin)' : ''}

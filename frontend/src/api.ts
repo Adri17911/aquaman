@@ -330,6 +330,7 @@ export interface TelemetryPoint {
 
 // React hooks with simple polling + SSE invalidation
 import { useEffect, useState, useCallback } from 'react'
+import { SSE_REFETCH_EVENT } from './hooks/useSSE'
 
 export function useHealth(intervalMs = 5000) {
   const [data, setData] = useState<Awaited<ReturnType<typeof getHealth>> | null>(null)
@@ -364,6 +365,11 @@ export function useDevices(intervalMs = 5000) {
     const id = setInterval(refetch, intervalMs)
     return () => clearInterval(id)
   }, [refetch, intervalMs])
+  useEffect(() => {
+    const handler = () => refetch()
+    window.addEventListener(SSE_REFETCH_EVENT, handler)
+    return () => window.removeEventListener(SSE_REFETCH_EVENT, handler)
+  }, [refetch])
   return { data, refetch }
 }
 
