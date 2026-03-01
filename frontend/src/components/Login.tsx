@@ -37,7 +37,9 @@ export function Login({ onLoggedIn }: LoginProps) {
           AQUA
         </h1>
         <p className="mb-6 text-sm text-slate-400">
-          {isRegister ? 'Create an account' : 'Sign in to continue'}
+          {isRegister
+            ? 'Create the first account (only available when no users exist yet).'
+            : 'Sign in to continue'}
         </p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>

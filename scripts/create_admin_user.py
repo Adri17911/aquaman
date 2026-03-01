@@ -15,20 +15,27 @@ PASSWORD = "admin"
 
 
 def _hash_password(password: str) -> str:
-    """Bcrypt hash compatible with passlib (used by the app)."""
+    """Use app's passlib when possible so login always works; fallback to bcrypt."""
     try:
-        import bcrypt
-        return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
-    except ImportError:
         from auth import hash_password
         return hash_password(password)
+    except Exception:
+        import bcrypt
+        return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
 
 
 def main() -> None:
     db.init()
     existing = db.get_user_by_username(USERNAME)
     if existing:
-        print(f"User '{USERNAME}' already exists (id={existing['id']}). Nothing done.")
+        # Update password so admin/admin works (e.g. after script was run with wrong hash)
+        new_hash = _hash_password(PASSWORD)
+        with db._lock, db._conn() as conn:
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE username = ?",
+                (new_hash, USERNAME.lower()),
+            )
+        print(f"User '{USERNAME}' password reset to '{PASSWORD}'.")
         return
     user = db.create_user(USERNAME, _hash_password(PASSWORD), is_admin=True)
     print(f"Created user '{USERNAME}' (id={user['id']}) with password '{PASSWORD}'.")

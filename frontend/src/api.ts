@@ -15,13 +15,22 @@ export async function login(username: string, password: string): Promise<LoginRe
     body: JSON.stringify({ username: username.trim(), password }),
   })
   if (!r.ok) {
-    const text = await r.text()
-    throw new Error(text || 'Login failed')
+    const msg = await apiErrorText(r, 'Login failed')
+    throw new Error(msg)
   }
   const data = (await r.json()) as LoginResponse
   setToken(data.token)
   setStoredUser(data.user)
   return data
+}
+
+async function apiErrorText(r: Response, fallback: string): Promise<string> {
+  try {
+    const body = await r.json() as { detail?: string }
+    return body.detail || fallback
+  } catch {
+    return fallback
+  }
 }
 
 export async function register(username: string, password: string): Promise<LoginResponse> {
@@ -31,8 +40,11 @@ export async function register(username: string, password: string): Promise<Logi
     body: JSON.stringify({ username: username.trim(), password }),
   })
   if (!r.ok) {
-    const text = await r.text()
-    throw new Error(text || 'Registration failed')
+    const msg =
+      r.status === 403
+        ? 'An account already exists. Please sign in instead, or ask an admin to add you in Settings → Users.'
+        : await apiErrorText(r, 'Registration failed')
+    throw new Error(msg)
   }
   const data = (await r.json()) as LoginResponse
   setToken(data.token)

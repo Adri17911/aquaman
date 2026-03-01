@@ -17,6 +17,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py config.py database.py events.py mqtt_worker.py scheduler.py auth.py ./
+COPY scripts/ ./scripts/
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 
 # Persist DB and settings (mount volume at /data and set AQUA_DATA_DIR)
