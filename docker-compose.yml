@@ -8,6 +8,8 @@ services:
       # Use MQTT broker from this stack (set to host.docker.internal if broker runs on host)
       AQUA_MQTT_BROKER_HOST: mosquitto
       AQUA_MQTT_BROKER_PORT: "1883"
+      # Optional: set a secret in production so JWT tokens survive restarts (e.g. in Portainer env)
+      # AQUA_JWT_SECRET: "your-secret-here"
     volumes:
       - aqua_data:/data
     depends_on:
