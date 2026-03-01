@@ -23,5 +23,5 @@ frontend/dist
 aqua.db
 settings.json
 
-# Scripts and docs (optional; keep if you want)
-scripts
+# Docs (optional; not needed in image)
+docs
