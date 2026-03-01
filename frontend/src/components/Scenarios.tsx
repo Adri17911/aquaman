@@ -21,6 +21,7 @@ function strToDays(s: string): number[] {
 
 interface ScenariosProps {
   deviceId: string | null
+  onSchedulesChange?: () => void
 }
 
 interface FormState {
@@ -49,7 +50,7 @@ const defaultForm: FormState = {
   enabled: true,
 }
 
-export function Scenarios({ deviceId }: ScenariosProps) {
+export function Scenarios({ deviceId, onSchedulesChange }: ScenariosProps) {
   const [open, setOpen] = useState(false)
   const [schedules, setSchedules] = useState<Schedule[]>([])
   const [editing, setEditing] = useState<Schedule | null>(null)
@@ -137,6 +138,7 @@ export function Scenarios({ deviceId }: ScenariosProps) {
       }
       resetForm()
       load()
+      onSchedulesChange?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save')
     } finally {
@@ -150,6 +152,7 @@ export function Scenarios({ deviceId }: ScenariosProps) {
       await deleteSchedule(id)
       if (editing?.id === id) resetForm()
       load()
+      onSchedulesChange?.()
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to delete')
     }

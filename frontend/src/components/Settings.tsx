@@ -1,5 +1,13 @@
-import { useState, useEffect } from 'react'
-import { getHealth, getMqttSettings, updateMqttSettings } from '../api'
+import { useState, useEffect, useCallback } from 'react'
+import {
+  getHealth,
+  getMqttSettings,
+  updateMqttSettings,
+  listUsers,
+  createUser,
+  deleteUser,
+  type ApiUser,
+} from '../api'
 
 const STORAGE_KEY_AUTO_DISCOVERY = 'aqua-auto-discovery'
 const STORAGE_KEY_MANUAL_DEVICES = 'aqua-manual-devices'
@@ -38,9 +46,10 @@ interface SettingsProps {
   isOpen: boolean
   onClose: () => void
   onSettingsChange?: () => void
+  isAdmin?: boolean
 }
 
-export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
+export function Settings({ isOpen, onClose, onSettingsChange, isAdmin }: SettingsProps) {
   const [autoDiscovery, setAutoDiscoveryState] = useState(true)
   const [deviceId, setDeviceId] = useState('')
   const [deviceName, setDeviceName] = useState('')
@@ -52,11 +61,28 @@ export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
   const [mqttBrokerPort, setMqttBrokerPort] = useState('1883')
   const [mqttUsername, setMqttUsername] = useState('')
   const [mqttPassword, setMqttPassword] = useState('')
+  const [mqttUseTls, setMqttUseTls] = useState(false)
+  const [mqttCaCerts, setMqttCaCerts] = useState('')
+  const [mqttTlsInsecure, setMqttTlsInsecure] = useState(false)
+  const [mqttPublicHost, setMqttPublicHost] = useState('')
+  const [mqttPublicPort, setMqttPublicPort] = useState('8883')
   const [mqttSaveError, setMqttSaveError] = useState('')
   const [mqttSaveSuccess, setMqttSaveSuccess] = useState(false)
+  const [users, setUsers] = useState<ApiUser[]>([])
+  const [userNewUsername, setUserNewUsername] = useState('')
+  const [userNewPassword, setUserNewPassword] = useState('')
+  const [userAddError, setUserAddError] = useState('')
+  const [userAddSuccess, setUserAddSuccess] = useState(false)
+  const [userDeletingId, setUserDeletingId] = useState<number | null>(null)
+
+  const loadUsers = useCallback(() => {
+    if (!isAdmin) return
+    listUsers().then(setUsers).catch(() => setUsers([]))
+  }, [isAdmin])
 
   useEffect(() => {
     if (isOpen) {
+      if (isAdmin) loadUsers()
       setAutoDiscoveryState(getAutoDiscovery())
       getHealth().then(setHealth).catch(() => setHealth(null))
       getMqttSettings().then((s) => {
@@ -65,9 +91,14 @@ export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
         setMqttBrokerPort(String(s.broker_port))
         setMqttUsername(s.username ?? '')
         setMqttPassword('')
+        setMqttUseTls(s.use_tls ?? false)
+        setMqttCaCerts(s.ca_certs ?? '')
+        setMqttTlsInsecure(s.tls_insecure ?? false)
+        setMqttPublicHost(s.public_broker_host ?? '')
+        setMqttPublicPort(s.public_broker_port != null ? String(s.public_broker_port) : '8883')
       }).catch(() => setMqttSettings(null))
     }
-  }, [isOpen])
+  }, [isOpen, isAdmin, loadUsers])
 
   const handleAutoDiscoveryChange = (checked: boolean) => {
     setAutoDiscovery(checked)
@@ -80,14 +111,24 @@ export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
     setMqttSaveError('')
     setMqttSaveSuccess(false)
     const port = parseInt(mqttBrokerPort, 10)
+    const publicPort = mqttPublicPort.trim() ? parseInt(mqttPublicPort, 10) : null
     if (isNaN(port) || port < 1 || port > 65535) {
-      setMqttSaveError('Invalid port (1–65535)')
+      setMqttSaveError('Invalid broker port (1–65535)')
+      return
+    }
+    if (publicPort != null && (isNaN(publicPort) || publicPort < 1 || publicPort > 65535)) {
+      setMqttSaveError('Invalid public port (1–65535)')
       return
     }
     try {
-      const updates: { broker_host: string; broker_port: number; username?: string; password?: string } = {
+      const updates: Parameters<typeof updateMqttSettings>[0] = {
         broker_host: mqttBrokerHost.trim() || 'localhost',
         broker_port: port,
+        use_tls: mqttUseTls,
+        ca_certs: mqttCaCerts.trim() || undefined,
+        tls_insecure: mqttTlsInsecure,
+        public_broker_host: mqttPublicHost.trim() || undefined,
+        public_broker_port: publicPort ?? undefined,
       }
       if (mqttUsername.trim() !== '') updates.username = mqttUsername.trim()
       if (mqttPassword !== '') updates.password = mqttPassword
@@ -222,6 +263,73 @@ export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
                     className="w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
                   />
                 </div>
+                <div className="border-t border-slate-700 pt-3">
+                  <h4 className="mb-2 text-xs font-medium text-slate-400">Internet (MQTTs)</h4>
+                  <p className="mb-2 text-xs text-slate-500">
+                    For ESP32s over the internet, use TLS and set the public host/port devices will connect to.
+                  </p>
+                  <label className="mb-2 flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={mqttUseTls}
+                      onChange={(e) => setMqttUseTls(e.target.checked)}
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-700 text-cyan-500 focus:ring-cyan-500"
+                    />
+                    <span className="text-sm text-slate-200">Use TLS (MQTTs)</span>
+                  </label>
+                  <div className="mb-2">
+                    <label htmlFor="mqtt-ca-certs" className="mb-1 block text-xs text-slate-500">
+                      CA cert path (optional)
+                    </label>
+                    <input
+                      id="mqtt-ca-certs"
+                      type="text"
+                      value={mqttCaCerts}
+                      onChange={(e) => setMqttCaCerts(e.target.value)}
+                      placeholder="/path/to/ca.crt"
+                      className="w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                    />
+                  </div>
+                  <label className="mb-2 flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={mqttTlsInsecure}
+                      onChange={(e) => setMqttTlsInsecure(e.target.checked)}
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-700 text-cyan-500 focus:ring-cyan-500"
+                    />
+                    <span className="text-sm text-slate-200">TLS insecure (e.g. self-signed)</span>
+                  </label>
+                  <div className="mb-2">
+                    <label htmlFor="mqtt-public-host" className="mb-1 block text-xs text-slate-500">
+                      Public broker host (for devices)
+                    </label>
+                    <input
+                      id="mqtt-public-host"
+                      type="text"
+                      value={mqttPublicHost}
+                      onChange={(e) => setMqttPublicHost(e.target.value)}
+                      placeholder="mqtt.yourdomain.com or your IP"
+                      className="w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="mqtt-public-port" className="mb-1 block text-xs text-slate-500">
+                      Public broker port (e.g. 8883)
+                    </label>
+                    <input
+                      id="mqtt-public-port"
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={mqttPublicPort}
+                      onChange={(e) => setMqttPublicPort(e.target.value)}
+                      className="w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">
+                    Devices can get connection info from: <code className="rounded bg-slate-800 px-1">GET /api/mqtt/connection</code>
+                  </p>
+                </div>
                 {mqttSaveError && <p className="text-sm text-rose-400">{mqttSaveError}</p>}
                 {mqttSaveSuccess && <p className="text-sm text-emerald-400">Broker settings saved. Reconnecting…</p>}
                 <button
@@ -305,6 +413,98 @@ export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
                 </button>
               </form>
             </section>
+
+            {isAdmin && (
+              <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+                <h3 className="mb-3 font-display text-sm font-medium text-slate-300">Users</h3>
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault()
+                    setUserAddError('')
+                    setUserAddSuccess(false)
+                    if (!userNewUsername.trim() || userNewPassword.length < 6) {
+                      setUserAddError('Username (2+ chars) and password (6+ chars) required')
+                      return
+                    }
+                    try {
+                      await createUser(userNewUsername, userNewPassword)
+                      setUserNewUsername('')
+                      setUserNewPassword('')
+                      setUserAddSuccess(true)
+                      loadUsers()
+                      setTimeout(() => setUserAddSuccess(false), 2000)
+                    } catch (err) {
+                      setUserAddError(err instanceof Error ? err.message : 'Failed to add user')
+                    }
+                  }}
+                  className="mb-4 flex flex-wrap items-end gap-3"
+                >
+                  <div className="min-w-[120px] flex-1">
+                    <label className="mb-1 block text-xs text-slate-500">Username</label>
+                    <input
+                      type="text"
+                      value={userNewUsername}
+                      onChange={(e) => setUserNewUsername(e.target.value)}
+                      className="w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200"
+                      placeholder="newuser"
+                    />
+                  </div>
+                  <div className="min-w-[120px] flex-1">
+                    <label className="mb-1 block text-xs text-slate-500">Password</label>
+                    <input
+                      type="password"
+                      value={userNewPassword}
+                      onChange={(e) => setUserNewPassword(e.target.value)}
+                      className="w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200"
+                      placeholder="••••••••"
+                      minLength={6}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-500"
+                  >
+                    Add user
+                  </button>
+                </form>
+                {userAddError && <p className="mb-2 text-sm text-rose-400">{userAddError}</p>}
+                {userAddSuccess && <p className="mb-2 text-sm text-emerald-400">User added.</p>}
+                <ul className="space-y-2">
+                  {users.map((u) => (
+                    <li
+                      key={u.id}
+                      className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2"
+                    >
+                      <span className="text-sm text-slate-200">
+                        {u.username}
+                        {u.is_admin ? (
+                          <span className="ml-2 text-xs text-cyan-400">admin</span>
+                        ) : null}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={userDeletingId === u.id}
+                        onClick={async () => {
+                          if (!confirm(`Delete user "${u.username}"?`)) return
+                          setUserDeletingId(u.id)
+                          try {
+                            await deleteUser(u.id)
+                            loadUsers()
+                          } catch (err) {
+                            alert(err instanceof Error ? err.message : 'Failed to delete')
+                          } finally {
+                            setUserDeletingId(null)
+                          }
+                        }}
+                        className="rounded px-2 py-1 text-xs text-rose-400 hover:bg-slate-700 disabled:opacity-50"
+                      >
+                        {userDeletingId === u.id ? '…' : 'Delete'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
           </div>
         </div>
       </div>

@@ -7,12 +7,13 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from auth import create_access_token, decode_access_token, hash_password, verify_password
 from config import load_config, save_config
 from database import db
 from events import emit_event, sse_response
@@ -51,6 +52,11 @@ class MqttSettingsUpdate(BaseModel):
     broker_port: int | None = Field(None, ge=1, le=65535)
     username: str | None = None
     password: str | None = None
+    use_tls: bool | None = None
+    ca_certs: str | None = None
+    tls_insecure: bool | None = None
+    public_broker_host: str | None = None
+    public_broker_port: int | None = Field(None, ge=1, le=65535)
 
 
 class ScheduleCreate(BaseModel):
@@ -78,6 +84,16 @@ class ScheduleUpdate(BaseModel):
     days_of_week: str | None = None
     enabled: bool | None = None
     curve_points: str | None = None
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
 
 
 # --- Background tasks ---
@@ -159,6 +175,24 @@ app.add_middleware(
 # --- API (mounted at /api so catch-all doesn't shadow PUT/POST) ---
 api = FastAPI()
 
+PUBLIC_PATHS = {"/health", "/auth/login", "/auth/register"}
+
+
+@api.middleware("http")
+async def require_auth(request: Request, call_next):
+    path = request.scope.get("path", request.url.path)
+    if path in PUBLIC_PATHS:
+        return await call_next(request)
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+    token = auth[7:].strip()
+    payload = decode_access_token(token)
+    if not payload:
+        return JSONResponse({"detail": "Invalid or expired token"}, status_code=401)
+    request.state.user = payload
+    return await call_next(request)
+
 
 @api.get("/health")
 def health():
@@ -171,6 +205,76 @@ def health():
         "devices_count": len(db.list_devices()),
         "latest_telemetry_ts": latest["ts"] if latest else None,
     }
+
+
+@api.post("/auth/login")
+def login(body: LoginRequest):
+    user = db.get_user_by_username(body.username)
+    if not user or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(401, "Invalid username or password")
+    token = create_access_token(user["id"], user["username"], user["is_admin"])
+    return {"token": token, "user": {"username": user["username"], "is_admin": user["is_admin"]}}
+
+
+@api.post("/auth/register")
+def register(body: RegisterRequest):
+    if db.count_users() > 0:
+        raise HTTPException(403, "Registration disabled: users already exist")
+    username = (body.username or "").strip().lower()
+    if not username or len(username) < 2:
+        raise HTTPException(400, "Username must be at least 2 characters")
+    if len(body.password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    if db.get_user_by_username(username):
+        raise HTTPException(409, "Username already taken")
+    user = db.create_user(username, hash_password(body.password), is_admin=True)
+    token = create_access_token(user["id"], user["username"], user["is_admin"])
+    return {"token": token, "user": {"username": user["username"], "is_admin": user["is_admin"]}}
+
+
+@api.get("/auth/me")
+def auth_me(request: Request):
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return {"username": user["username"], "is_admin": user["is_admin"]}
+
+
+def _require_admin(request: Request):
+    user = getattr(request.state, "user", None)
+    if not user or not user.get("is_admin"):
+        raise HTTPException(403, "Admin required")
+
+
+@api.get("/users")
+def list_users(request: Request):
+    _require_admin(request)
+    return db.list_users()
+
+
+@api.post("/users")
+def create_user(request: Request, body: RegisterRequest):
+    _require_admin(request)
+    username = (body.username or "").strip().lower()
+    if not username or len(username) < 2:
+        raise HTTPException(400, "Username must be at least 2 characters")
+    if len(body.password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    if db.get_user_by_username(username):
+        raise HTTPException(409, "Username already taken")
+    user = db.create_user(username, hash_password(body.password), is_admin=False)
+    return {"id": user["id"], "username": user["username"], "is_admin": user["is_admin"], "created_at": user["created_at"]}
+
+
+@api.delete("/users/{user_id}")
+def delete_user(request: Request, user_id: int):
+    _require_admin(request)
+    current = getattr(request.state, "user", None)
+    if current and current.get("sub") == user_id:
+        raise HTTPException(400, "Cannot delete your own account")
+    if not db.delete_user(user_id):
+        raise HTTPException(404, "User not found")
+    return {"status": "deleted"}
 
 
 @api.get("/devices")
@@ -274,6 +378,24 @@ async def stream():
     return sse_response()
 
 
+@api.get("/mqtt/connection")
+def get_mqtt_connection():
+    """Connection info for devices (ESP32, etc.) – use this over the internet with MQTTs.
+    Returns the public broker host/port and topic_root; no credentials."""
+    cfg = load_config()
+    if not cfg.mqtt.enabled:
+        return {"enabled": False, "broker_host": None, "broker_port": None, "use_tls": False, "topic_root": cfg.mqtt.topic_root}
+    host = cfg.mqtt.public_broker_host or cfg.mqtt.broker_host
+    port = cfg.mqtt.public_broker_port if cfg.mqtt.public_broker_port is not None else cfg.mqtt.broker_port
+    return {
+        "enabled": True,
+        "broker_host": host,
+        "broker_port": port,
+        "use_tls": cfg.mqtt.use_tls,
+        "topic_root": cfg.mqtt.topic_root.strip("/"),
+    }
+
+
 @api.get("/settings/mqtt")
 def get_mqtt_settings():
     cfg = load_config()
@@ -283,24 +405,42 @@ def get_mqtt_settings():
         "broker_port": m.broker_port,
         "username": m.username or "",
         "has_password": m.password is not None and len(str(m.password)) > 0,
+        "use_tls": m.use_tls,
+        "ca_certs": m.ca_certs or "",
+        "tls_insecure": m.tls_insecure,
+        "public_broker_host": m.public_broker_host or "",
+        "public_broker_port": m.public_broker_port,
     }
 
 
 def _do_update_mqtt_settings(body: MqttSettingsUpdate):
     cfg = load_config()
     m = cfg.mqtt
+    updates = {}
     if body.broker_host is not None:
-        m = m.model_copy(update={"broker_host": body.broker_host.strip() or "localhost"})
+        updates["broker_host"] = body.broker_host.strip() or "localhost"
     if body.broker_port is not None:
-        m = m.model_copy(update={"broker_port": body.broker_port})
+        updates["broker_port"] = body.broker_port
     if body.username is not None:
-        m = m.model_copy(update={"username": body.username.strip() or None})
+        updates["username"] = body.username.strip() or None
     if body.password is not None:
-        m = m.model_copy(update={"password": body.password if body.password else None})
-    cfg = cfg.model_copy(update={"mqtt": m})
-    save_config(cfg)
-    mqtt_worker.stop()
-    mqtt_worker.start()
+        updates["password"] = body.password if body.password else None
+    if body.use_tls is not None:
+        updates["use_tls"] = body.use_tls
+    if body.ca_certs is not None:
+        updates["ca_certs"] = body.ca_certs.strip() or None
+    if body.tls_insecure is not None:
+        updates["tls_insecure"] = body.tls_insecure
+    if body.public_broker_host is not None:
+        updates["public_broker_host"] = body.public_broker_host.strip() or None
+    if body.public_broker_port is not None:
+        updates["public_broker_port"] = body.public_broker_port
+    if updates:
+        m = m.model_copy(update=updates)
+        cfg = cfg.model_copy(update={"mqtt": m})
+        save_config(cfg)
+        mqtt_worker.stop()
+        mqtt_worker.start()
     return get_mqtt_settings()
 
 

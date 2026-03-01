@@ -114,6 +114,15 @@ class Database:
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_schedules_device ON schedules(device_id);
+
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    is_admin INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username);
             """)
             try:
                 conn.execute("ALTER TABLE schedules ADD COLUMN curve_points TEXT")
@@ -303,6 +312,49 @@ class Database:
                 "SELECT * FROM schedules WHERE enabled = 1 AND scenario_type = 'curve' AND curve_points IS NOT NULL"
             ).fetchall()
             return [_schedule_row_to_dict(r) for r in rows]
+
+    # --- Users ---
+    def count_users(self) -> int:
+        with self._lock, self._conn() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()
+            return row["n"] or 0
+
+    def create_user(self, username: str, password_hash: str, is_admin: bool = False) -> dict[str, Any]:
+        now = utc_now()
+        with self._lock, self._conn() as conn:
+            conn.execute(
+                "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?)",
+                (username.strip().lower(), password_hash, 1 if is_admin else 0, now),
+            )
+            row_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        return self.get_user_by_id(row_id) or {}
+
+    def get_user_by_id(self, user_id: int) -> dict[str, Any] | None:
+        with self._lock, self._conn() as conn:
+            row = conn.execute(
+                "SELECT id, username, is_admin, created_at FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            return _user_row_to_dict(row) if row else None
+
+    def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        with self._lock, self._conn() as conn:
+            row = conn.execute(
+                "SELECT id, username, password_hash, is_admin, created_at FROM users WHERE username = ?",
+                (username.strip().lower(),),
+            ).fetchone()
+            return _user_row_to_dict(row) if row else None
+
+    def list_users(self) -> list[dict[str, Any]]:
+        with self._lock, self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, username, is_admin, created_at FROM users ORDER BY username"
+            ).fetchall()
+            return [_user_row_to_dict(r) for r in rows]
+
+    def delete_user(self, user_id: int) -> bool:
+        with self._lock, self._conn() as conn:
+            cur = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            return cur.rowcount > 0
 
     def upsert_device_from_telemetry(self, device_id: str, payload: dict[str, Any]) -> None:
         now = utc_now()
@@ -661,6 +713,19 @@ def _schedule_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "curve_points": curve_points,
         "created_at": row["created_at"],
     }
+
+
+def _user_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    keys = row.keys()
+    out: dict[str, Any] = {
+        "id": row["id"],
+        "username": row["username"],
+        "is_admin": bool(row["is_admin"]),
+        "created_at": row["created_at"],
+    }
+    if "password_hash" in keys and row["password_hash"]:
+        out["password_hash"] = row["password_hash"]
+    return out
 
 
 db = Database()

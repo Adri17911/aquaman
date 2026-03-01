@@ -1,10 +1,19 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useCallback, useEffect, useState, useMemo } from 'react'
 import { useSSE } from './hooks/useSSE'
 import { Dashboard } from './components/Dashboard'
+import { Login } from './components/Login'
 import { Settings, getAutoDiscovery, getManualDeviceIds } from './components/Settings'
-import { useDevices, useLatestTelemetry, useHealth } from './api'
+import { useDevices, useLatestTelemetry, useHealth, getMe } from './api'
+import { clearToken, getStoredUser } from './auth'
+import type { AuthUser } from './auth'
 
-function App() {
+function AuthenticatedApp({
+  user,
+  onLogout,
+}: {
+  user: AuthUser
+  onLogout: () => void
+}) {
   const [deviceId, setDeviceId] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsVersion, setSettingsVersion] = useState(0)
@@ -53,6 +62,10 @@ function App() {
                 ))}
               </select>
             )}
+            <span className="text-xs text-slate-500">
+              {user.username}
+              {user.is_admin ? ' (admin)' : ''}
+            </span>
             <button
               onClick={() => setSettingsOpen(true)}
               className="rounded p-1.5 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
@@ -63,6 +76,12 @@ function App() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
             </button>
+            <button
+              onClick={onLogout}
+              className="rounded px-2 py-1 text-xs text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
+            >
+              Log out
+            </button>
           </div>
         </div>
       </header>
@@ -71,12 +90,58 @@ function App() {
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         onSettingsChange={() => setSettingsVersion((v) => v + 1)}
+        isAdmin={user.is_admin}
       />
       <main className="mx-auto max-w-7xl px-4 py-6">
         <Dashboard deviceId={deviceId} telemetry={telemetry} />
       </main>
     </div>
   )
+}
+
+function App() {
+  const [user, setUser] = useState<ReturnType<typeof getStoredUser>>(null)
+  const [authChecked, setAuthChecked] = useState(false)
+
+  useEffect(() => {
+    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('aqua-token') : null
+    if (!token) {
+      setAuthChecked(true)
+      return
+    }
+    getMe()
+      .then((u) => {
+        setUser(u)
+        setAuthChecked(true)
+      })
+      .catch(() => {
+        clearToken()
+        setAuthChecked(true)
+      })
+  }, [])
+
+  const handleLoggedIn = useCallback(() => {
+    setUser(getStoredUser())
+  }, [])
+
+  const handleLogout = useCallback(() => {
+    clearToken()
+    setUser(null)
+  }, [])
+
+  if (!authChecked) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950">
+        <span className="text-slate-500">Loading…</span>
+      </div>
+    )
+  }
+
+  if (!user) {
+    return <Login onLoggedIn={handleLoggedIn} />
+  }
+
+  return <AuthenticatedApp user={user} onLogout={handleLogout} />
 }
 
 export default App

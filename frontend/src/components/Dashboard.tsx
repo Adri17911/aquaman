@@ -15,6 +15,7 @@ import {
   sendHeaterCommand,
   sendLedCommand,
   getCommandStatus,
+  listSchedules,
   TelemetryPoint,
   useLatestTelemetry,
 } from '../api'
@@ -48,11 +49,38 @@ export function Dashboard({ deviceId, telemetry }: DashboardProps) {
   const [pendingHeater, setPendingHeater] = useState<string | null>(null)
   const [pendingLed, setPendingLed] = useState<string | null>(null)
   const [brightnessSlider, setBrightnessSlider] = useState<number>(100)
+  const [hasActiveCurveSchedule, setHasActiveCurveSchedule] = useState(false)
   const { refetch } = useLatestTelemetry(deviceId)
 
   useEffect(() => {
     if (telemetry?.led_brightness != null) setBrightnessSlider(telemetry.led_brightness)
   }, [telemetry?.led_brightness])
+
+  useEffect(() => {
+    if (!deviceId) {
+      setHasActiveCurveSchedule(false)
+      return
+    }
+    listSchedules(deviceId)
+      .then((schedules) => {
+        const hasCurve = schedules.some(
+          (s) => s.scenario_type === 'curve' && s.enabled
+        )
+        setHasActiveCurveSchedule(hasCurve)
+      })
+      .catch(() => setHasActiveCurveSchedule(false))
+  }, [deviceId])
+
+  const refetchCurveState = useCallback(() => {
+    if (!deviceId) return
+    listSchedules(deviceId)
+      .then((schedules) => {
+        setHasActiveCurveSchedule(
+          schedules.some((s) => s.scenario_type === 'curve' && s.enabled)
+        )
+      })
+      .catch(() => setHasActiveCurveSchedule(false))
+  }, [deviceId])
 
   const loadChart = useCallback(async () => {
     const metrics = selectedMetrics.length > 0 ? selectedMetrics : ['temp']
@@ -381,14 +409,19 @@ export function Dashboard({ deviceId, telemetry }: DashboardProps) {
         <div className="space-y-4">
         <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
           <h2 className="mb-3 font-display text-sm font-medium text-slate-300">LED light</h2>
+          {hasActiveCurveSchedule && (
+            <p className="mb-3 text-xs text-amber-400/90">
+              Manual control disabled — LED is driven by the active 24h curve schedule below.
+            </p>
+          )}
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex gap-2">
               {(['on', 'off', 'toggle'] as const).map((action) => (
                 <button
                   key={action}
                   onClick={() => handleLed(action)}
-                  disabled={!!pendingLed}
-                  className="rounded-lg bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-70"
+                  disabled={!!pendingLed || hasActiveCurveSchedule}
+                  className="rounded-lg bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-70 disabled:cursor-not-allowed"
                 >
                   {pendingLed === action ? '…' : action.toUpperCase()}
                 </button>
@@ -401,22 +434,27 @@ export function Dashboard({ deviceId, telemetry }: DashboardProps) {
                   min="0"
                   max="100"
                   value={brightnessSlider}
-                  className="h-2 flex-1 rounded-lg accent-amber-500"
+                  disabled={hasActiveCurveSchedule}
+                  className="h-2 flex-1 rounded-lg accent-amber-500 disabled:opacity-60 disabled:cursor-not-allowed"
                   onChange={(e) => setBrightnessSlider(Number((e.target as HTMLInputElement).value))}
                   onMouseUp={(e) =>
+                    !hasActiveCurveSchedule &&
                     handleLed('set_brightness', Number((e.target as HTMLInputElement).value))
                   }
                   onTouchEnd={(e) =>
+                    !hasActiveCurveSchedule &&
                     handleLed('set_brightness', Number((e.target as HTMLInputElement).value))
                   }
                 />
                 <span className="w-10 text-right text-sm text-slate-400">{brightnessSlider}%</span>
               </div>
-              <span className="text-xs text-slate-500">Brightness (0–100%)</span>
+              <span className="text-xs text-slate-500">
+                {hasActiveCurveSchedule ? 'Brightness follows curve' : 'Brightness (0–100%)'}
+              </span>
             </div>
           </div>
         </div>
-        <Scenarios deviceId={deviceId} />
+        <Scenarios deviceId={deviceId} onSchedulesChange={refetchCurveState} />
         </div>
       </div>
     </div>

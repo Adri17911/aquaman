@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import ssl
 import threading
 import uuid
 from typing import Any, Callable
@@ -151,6 +152,15 @@ class MqttWorker:
             client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=cfg.mqtt.client_id)
             if cfg.mqtt.username:
                 client.username_pw_set(cfg.mqtt.username, cfg.mqtt.password)
+            if cfg.mqtt.use_tls:
+                cert_reqs = ssl.CERT_NONE if cfg.mqtt.tls_insecure else ssl.CERT_REQUIRED
+                client.tls_set(
+                    ca_certs=cfg.mqtt.ca_certs or None,
+                    cert_reqs=cert_reqs,
+                    tls_version=ssl.PROTOCOL_TLS_CLIENT,
+                )
+                if cfg.mqtt.tls_insecure:
+                    client.tls_insecure_set(True)
             client.reconnect_delay_set(min_delay=1, max_delay=30)
             client.on_connect = self._on_connect
             client.on_disconnect = self._on_disconnect
@@ -162,7 +172,8 @@ class MqttWorker:
             client.connect_async(cfg.mqtt.broker_host, cfg.mqtt.broker_port, cfg.mqtt.keepalive_seconds)
             client.loop_start()
             self._client = client
-        logger.info("MQTT connecting to %s:%s", cfg.mqtt.broker_host, cfg.mqtt.broker_port)
+        scheme = "mqtts" if cfg.mqtt.use_tls else "mqtt"
+        logger.info("MQTT connecting to %s://%s:%s", scheme, cfg.mqtt.broker_host, cfg.mqtt.broker_port)
 
     def _on_connect(
         self,

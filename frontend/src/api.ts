@@ -1,9 +1,98 @@
+import { clearToken, getAuthHeaders, setStoredUser, setToken } from './auth'
+import type { AuthUser } from './auth'
+
 const API_BASE = '/api'
 
-async function fetcher<T>(url: string): Promise<T> {
-  const r = await fetch(`${API_BASE}${url}`)
+export interface LoginResponse {
+  token: string
+  user: AuthUser
+}
+
+export async function login(username: string, password: string): Promise<LoginResponse> {
+  const r = await fetch(`${API_BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: username.trim(), password }),
+  })
+  if (!r.ok) {
+    const text = await r.text()
+    throw new Error(text || 'Login failed')
+  }
+  const data = (await r.json()) as LoginResponse
+  setToken(data.token)
+  setStoredUser(data.user)
+  return data
+}
+
+export async function register(username: string, password: string): Promise<LoginResponse> {
+  const r = await fetch(`${API_BASE}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: username.trim(), password }),
+  })
+  if (!r.ok) {
+    const text = await r.text()
+    throw new Error(text || 'Registration failed')
+  }
+  const data = (await r.json()) as LoginResponse
+  setToken(data.token)
+  setStoredUser(data.user)
+  return data
+}
+
+export async function getMe(): Promise<AuthUser> {
+  return fetcher<AuthUser>('/auth/me')
+}
+
+export interface ApiUser {
+  id: number
+  username: string
+  is_admin: boolean
+  created_at: string
+}
+
+export async function listUsers(): Promise<ApiUser[]> {
+  return fetcher<ApiUser[]>('/users')
+}
+
+export async function createUser(username: string, password: string): Promise<ApiUser> {
+  const r = await authFetch('/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: username.trim(), password }),
+  })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
+}
+
+export async function deleteUser(userId: number): Promise<void> {
+  const r = await authFetch(`/users/${userId}`, { method: 'DELETE' })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+async function fetcher<T>(url: string): Promise<T> {
+  const r = await fetch(`${API_BASE}${url}`, { headers: { ...getAuthHeaders() } })
+  if (r.status === 401) {
+    clearToken()
+    throw new Error('Session expired')
+  }
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+async function authFetch(
+  url: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  const r = await fetch(`${API_BASE}${url}`, {
+    ...init,
+    headers: { ...getAuthHeaders(), ...(init.headers as Record<string, string>) },
+  })
+  if (r.status === 401) {
+    clearToken()
+    throw new Error('Session expired')
+  }
+  return r
 }
 
 export async function getHealth() {
@@ -52,7 +141,7 @@ export async function getTelemetryMulti(
 }
 
 export async function sendHeaterCommand(deviceId: string, action: 'on' | 'off' | 'toggle') {
-  const r = await fetch(`${API_BASE}/devices/${deviceId}/commands/heater`, {
+  const r = await authFetch(`/devices/${deviceId}/commands/heater`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action }),
@@ -66,7 +155,7 @@ export async function sendLedCommand(
   action: string,
   payload?: { value?: number }
 ) {
-  const r = await fetch(`${API_BASE}/devices/${deviceId}/commands/led`, {
+  const r = await authFetch(`/devices/${deviceId}/commands/led`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, payload: payload ?? null }),
@@ -84,10 +173,27 @@ export interface MqttSettings {
   broker_port: number
   username: string
   has_password: boolean
+  use_tls: boolean
+  ca_certs: string
+  tls_insecure: boolean
+  public_broker_host: string
+  public_broker_port: number | null
+}
+
+export interface MqttConnection {
+  enabled: boolean
+  broker_host: string | null
+  broker_port: number | null
+  use_tls: boolean
+  topic_root: string
 }
 
 export async function getMqttSettings() {
   return fetcher<MqttSettings>('/settings/mqtt')
+}
+
+export async function getMqttConnection() {
+  return fetcher<MqttConnection>('/mqtt/connection')
 }
 
 export async function updateMqttSettings(updates: {
@@ -95,8 +201,13 @@ export async function updateMqttSettings(updates: {
   broker_port?: number
   username?: string
   password?: string
+  use_tls?: boolean
+  ca_certs?: string
+  tls_insecure?: boolean
+  public_broker_host?: string
+  public_broker_port?: number
 }) {
-  const r = await fetch(`${API_BASE}/settings/mqtt`, {
+  const r = await authFetch('/settings/mqtt', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
@@ -139,7 +250,7 @@ export async function createSchedule(body: {
   enabled?: boolean
   curve_points?: string | null
 }): Promise<Schedule> {
-  const r = await fetch(`${API_BASE}/schedules`, {
+  const r = await authFetch('/schedules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -163,7 +274,7 @@ export async function updateSchedule(
     curve_points: string | null
   }>
 ): Promise<Schedule> {
-  const r = await fetch(`${API_BASE}/schedules/${id}`, {
+  const r = await authFetch(`/schedules/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -173,7 +284,7 @@ export async function updateSchedule(
 }
 
 export async function deleteSchedule(id: number): Promise<void> {
-  const r = await fetch(`${API_BASE}/schedules/${id}`, { method: 'DELETE' })
+  const r = await authFetch(`/schedules/${id}`, { method: 'DELETE' })
   if (!r.ok) throw new Error(await r.text())
 }
 

@@ -29,15 +29,28 @@ class MqttSettings(BaseModel):
     telemetry_qos: int = Field(default=1, ge=0, le=2)
     command_qos: int = Field(default=1, ge=0, le=2)
     command_timeout_seconds: int = Field(default=5, ge=1, le=60)
+    # MQTT over TLS (MQTTs) for internet-facing devices
+    use_tls: bool = False
+    ca_certs: str | None = None  # Path to CA certificate file (optional; system CA used if unset)
+    tls_insecure: bool = False  # Set True to skip server hostname verification (e.g. self-signed)
+    # Public broker info returned to devices (e.g. your domain); if unset, broker_host/port used
+    public_broker_host: str | None = None
+    public_broker_port: int | None = None  # e.g. 8883 for MQTTs
 
 
 class LoggingSettings(BaseModel):
     retain_days: int = Field(default=30, ge=1, le=3650)
 
 
+class AuthSettings(BaseModel):
+    jwt_secret: str = "change-me-in-production"
+    jwt_expire_hours: int = Field(default=24 * 7, ge=1, le=24 * 365)  # 7 days default
+
+
 class AppConfig(BaseModel):
     mqtt: MqttSettings = MqttSettings()
     logging: LoggingSettings = LoggingSettings()
+    auth: AuthSettings = AuthSettings()
 
 
 _config_lock = Lock()
@@ -61,6 +74,23 @@ def load_config() -> AppConfig:
             _cached_config.mqtt.broker_host = os.environ["AQUA_MQTT_BROKER_HOST"]
         if os.environ.get("AQUA_MQTT_BROKER_PORT"):
             _cached_config.mqtt.broker_port = int(os.environ["AQUA_MQTT_BROKER_PORT"])
+        if os.environ.get("AQUA_MQTT_USE_TLS", "").lower() in ("1", "true", "yes"):
+            _cached_config.mqtt.use_tls = True
+        if os.environ.get("AQUA_MQTT_CA_CERTS"):
+            _cached_config.mqtt.ca_certs = os.environ["AQUA_MQTT_CA_CERTS"]
+        if os.environ.get("AQUA_MQTT_TLS_INSECURE", "").lower() in ("1", "true", "yes"):
+            _cached_config.mqtt.tls_insecure = True
+        if os.environ.get("AQUA_MQTT_PUBLIC_BROKER_HOST"):
+            _cached_config.mqtt.public_broker_host = os.environ["AQUA_MQTT_PUBLIC_BROKER_HOST"]
+        if os.environ.get("AQUA_MQTT_PUBLIC_BROKER_PORT"):
+            _cached_config.mqtt.public_broker_port = int(os.environ["AQUA_MQTT_PUBLIC_BROKER_PORT"])
+        if os.environ.get("AQUA_JWT_SECRET"):
+            _cached_config.auth.jwt_secret = os.environ["AQUA_JWT_SECRET"]
+        if os.environ.get("AQUA_JWT_EXPIRE_HOURS"):
+            try:
+                _cached_config.auth.jwt_expire_hours = int(os.environ["AQUA_JWT_EXPIRE_HOURS"])
+            except ValueError:
+                pass
         return _cached_config
 
 

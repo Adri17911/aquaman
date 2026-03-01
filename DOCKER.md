@@ -1,5 +1,9 @@
 # Running AQUA in Docker
 
+For full setup guides (local, Docker, Portainer, MQTTs), see [docs/SETUP.md](docs/SETUP.md). For configuration and troubleshooting, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
+---
+
 ## Deploy with Portainer
 
 Portainer runs your app as a **Stack** (Docker Compose). Two ways to get the image into Portainer:
@@ -114,3 +118,42 @@ docker run -p 8080:8080 -v aqua_data:/data -e AQUA_DATA_DIR=/data -e AQUA_MQTT_B
 | `AQUA_DATA_DIR` | Directory for `aqua.db` and `settings.json` (default: app dir). Set to `/data` in Docker. |
 | `AQUA_MQTT_BROKER_HOST` | Override MQTT broker host from settings. |
 | `AQUA_MQTT_BROKER_PORT` | Override MQTT broker port. |
+| `AQUA_MQTT_USE_TLS` | Set to `1` or `true` to connect to the broker with MQTT over TLS. |
+| `AQUA_MQTT_CA_CERTS` | Path to CA certificate file (optional). |
+| `AQUA_MQTT_TLS_INSECURE` | Set to `1` or `true` to skip server hostname verification (e.g. self-signed certs). |
+| `AQUA_MQTT_PUBLIC_BROKER_HOST` | Hostname returned to devices (e.g. your domain); for `GET /api/mqtt/connection`. |
+| `AQUA_MQTT_PUBLIC_BROKER_PORT` | Port returned to devices (e.g. `8883` for MQTTs). |
+
+---
+
+## MQTT over TLS (MQTTs) for internet-facing devices
+
+To let ESP32s (or other devices) connect over the internet securely:
+
+1. **Device connection API**  
+   ESP32s can call **`GET /api/mqtt/connection`** to get broker host, port, `use_tls`, and `topic_root` (no credentials). Use your server’s public URL, e.g. `https://your-server.com/api/mqtt/connection`.
+
+2. **Enable TLS in the app**  
+   In the dashboard **Settings** (or via env):
+   - **Use TLS:** on  
+   - **Public broker host:** your domain or public IP (e.g. `mqtt.yourdomain.com` or the same host as the API)  
+   - **Public broker port:** `8883`  
+   - If using a self-signed certificate, enable **TLS insecure** (skip hostname verification).
+
+3. **Enable TLS in Mosquitto**  
+   - Create certs (e.g. Let’s Encrypt or self-signed) and put `server.crt`, `server.key`, and optionally `ca.crt` in `mosquitto/certs/`.  
+   - Copy `mosquitto/mosquitto.conf.example` to `mosquitto/mosquitto.conf`, uncomment the `listener 8883` block and set the cert paths.  
+   - In `docker-compose.yml`, mount config and certs for the `mosquitto` service:
+     ```yaml
+     volumes:
+       - mosquitto_data:/mosquitto/data
+       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+       - ./mosquitto/certs:/mosquitto/certs:ro
+     ```
+   - Ensure port **8883** is exposed and reachable (firewall, router).
+
+4. **Backend connecting with TLS**  
+   If the broker is in the same stack, backend can still use `AQUA_MQTT_BROKER_HOST=mosquitto` and `AQUA_MQTT_BROKER_PORT=1883` (plain) for in-network traffic, while devices use the public host:8883 with MQTTs. Or set `AQUA_MQTT_USE_TLS=true` and `AQUA_MQTT_BROKER_PORT=8883` if the backend also talks to the broker over TLS.
+
+5. **ESP32 firmware**  
+   Use `WiFiClientSecure` and connect to the host/port from `/api/mqtt/connection` with TLS (port 8883). For self-signed certs you may need to set the CA or skip verification in the ESP32 MQTT client.
