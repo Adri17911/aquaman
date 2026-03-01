@@ -67,10 +67,13 @@ Common issues and how to fix them.
 - **Cause:** Port 8080 or 1883/8883 already in use on the host.
 - **Fix:** Change host port in `docker-compose.yml` (e.g. `"8081:8080"`) or stop the process using the port.
 
-### Backend in Docker can't reach Mosquitto
+### Backend in Docker can't reach Mosquitto / broker not "autodiscovered"
 
-- **Cause:** Wrong broker host; Docker network.
-- **Fix:** Use service name as host: `AQUA_MQTT_BROKER_HOST=mosquitto` (and same network). If broker runs on host, use `host.docker.internal` (Windows/Mac) or host IP on Linux.
+- **Cause:** Wrong broker host; Docker network; or env not applied in Portainer.
+- **Fix:**
+  1. When both `aqua` and `mosquitto` are in the same stack with `AQUA_DATA_DIR=/data`, the backend defaults to `mosquitto:1883` if the broker host was never changed from the default. Rebuild and redeploy so this takes effect.
+  2. Otherwise set env for the aqua service: `AQUA_MQTT_BROKER_HOST=mosquitto` and `AQUA_MQTT_BROKER_PORT=1883` (same network). If the broker runs on the host, use `host.docker.internal` (Windows/Mac) or the host IP on Linux.
+  3. In Portainer, check the stack's **Environment** for the aqua service and add these if missing.
 
 ### No data after restarting containers
 

@@ -119,6 +119,16 @@ export async function getDevices() {
   return fetcher<Array<{ device_id: string; name: string; online: boolean; last_seen_ts: string | null }>>('/devices')
 }
 
+export async function addDevice(deviceId: string, name?: string): Promise<{ device: { device_id: string; name: string }; status: string }> {
+  const r = await authFetch('/devices', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device_id: deviceId.trim(), name: name?.trim() || undefined }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
 export async function getLatestTelemetry(deviceId: string | null) {
   if (!deviceId) return null
   const q = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : ''

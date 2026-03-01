@@ -3,6 +3,7 @@ import {
   getHealth,
   getMqttSettings,
   updateMqttSettings,
+  addDevice,
   listUsers,
   createUser,
   deleteUser,
@@ -151,17 +152,8 @@ export function Settings({ isOpen, onClose, onSettingsChange, isAdmin }: Setting
       setAddError('Device ID is required')
       return
     }
-
     try {
-      const r = await fetch('/api/devices', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id: id, name: deviceName.trim() || undefined }),
-      })
-      if (!r.ok) {
-        const text = await r.text()
-        throw new Error(text || 'Failed to add device')
-      }
+      await addDevice(id, deviceName.trim() || undefined)
       addManualDeviceId(id)
       setDeviceId('')
       setDeviceName('')
@@ -187,6 +179,7 @@ export function Settings({ isOpen, onClose, onSettingsChange, isAdmin }: Setting
         role="dialog"
         aria-labelledby="settings-title"
         aria-modal="true"
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="flex h-full flex-col">
           <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
@@ -208,6 +201,9 @@ export function Settings({ isOpen, onClose, onSettingsChange, isAdmin }: Setting
             {/* MQTT broker config */}
             <section className="mb-6">
               <h3 className="mb-3 text-sm font-medium text-slate-300">MQTT broker</h3>
+              {mqttSettings === null && (
+                <p className="mb-2 text-sm text-amber-400">Could not load broker settings. Check connection and try again.</p>
+              )}
               <form onSubmit={handleMqttSave} className="space-y-3">
                 <div>
                   <label htmlFor="mqtt-host" className="mb-1 block text-xs text-slate-500">
@@ -367,9 +363,9 @@ export function Settings({ isOpen, onClose, onSettingsChange, isAdmin }: Setting
             </section>
 
             {/* Add device */}
-            <section>
+            <section className="mb-6">
               <h3 className="mb-3 text-sm font-medium text-slate-300">Add device manually</h3>
-              <p className="text-xs text-slate-500 mb-3">
+              <p className="mb-3 text-xs text-slate-500">
                 If autodiscovery fails, add your ESP32 manually. Use the device_id from your sketch (e.g. esp32-01). The device will appear and go online once it publishes telemetry.
               </p>
               <form onSubmit={handleAddDevice} className="space-y-3">
@@ -415,8 +411,8 @@ export function Settings({ isOpen, onClose, onSettingsChange, isAdmin }: Setting
             </section>
 
             {isAdmin && (
-              <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-                <h3 className="mb-3 font-display text-sm font-medium text-slate-300">Users</h3>
+              <section className="mt-6 rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+                <h3 className="mb-3 text-sm font-medium text-slate-300">Users</h3>
                 <form
                   onSubmit={async (e) => {
                     e.preventDefault()

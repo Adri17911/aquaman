@@ -74,6 +74,14 @@ def load_config() -> AppConfig:
             _cached_config.mqtt.broker_host = os.environ["AQUA_MQTT_BROKER_HOST"]
         if os.environ.get("AQUA_MQTT_BROKER_PORT"):
             _cached_config.mqtt.broker_port = int(os.environ["AQUA_MQTT_BROKER_PORT"])
+        # When running in Docker with standard /data volume, use same-stack mosquitto if no env and still default broker
+        if (
+            os.environ.get("AQUA_DATA_DIR") == "/data"
+            and not os.environ.get("AQUA_MQTT_BROKER_HOST")
+            and _cached_config.mqtt.broker_host == "192.168.1.100"
+        ):
+            _cached_config.mqtt.broker_host = "mosquitto"
+            _cached_config.mqtt.broker_port = 1883
         if os.environ.get("AQUA_MQTT_USE_TLS", "").lower() in ("1", "true", "yes"):
             _cached_config.mqtt.use_tls = True
         if os.environ.get("AQUA_MQTT_CA_CERTS"):
