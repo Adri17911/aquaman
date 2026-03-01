@@ -25,12 +25,16 @@ export async function login(username: string, password: string): Promise<LoginRe
 }
 
 async function apiErrorText(r: Response, fallback: string): Promise<string> {
+  const text = await r.text()
+  if (!text) return fallback
   try {
-    const body = await r.json() as { detail?: string }
-    return body.detail || fallback
+    const body = JSON.parse(text) as { detail?: string }
+    if (body.detail) return body.detail
   } catch {
-    return fallback
+    if (text.length < 400 && !text.startsWith('<!')) return text
+    if (text.startsWith('<!')) return fallback + ' (server error)'
   }
+  return fallback
 }
 
 export async function register(username: string, password: string): Promise<LoginResponse> {

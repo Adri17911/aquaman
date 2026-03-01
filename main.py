@@ -221,18 +221,24 @@ def login(body: LoginRequest):
 
 @api.post("/auth/register")
 def register(body: RegisterRequest):
-    if db.count_users() > 0:
-        raise HTTPException(403, "Registration disabled: users already exist")
-    username = (body.username or "").strip().lower()
-    if not username or len(username) < 2:
-        raise HTTPException(400, "Username must be at least 2 characters")
-    if len(body.password) < 6:
-        raise HTTPException(400, "Password must be at least 6 characters")
-    if db.get_user_by_username(username):
-        raise HTTPException(409, "Username already taken")
-    user = db.create_user(username, hash_password(body.password), is_admin=True)
-    token = create_access_token(user["id"], user["username"], user["is_admin"])
-    return {"token": token, "user": {"username": user["username"], "is_admin": user["is_admin"]}}
+    try:
+        if db.count_users() > 0:
+            raise HTTPException(403, "Registration disabled: users already exist")
+        username = (body.username or "").strip().lower()
+        if not username or len(username) < 2:
+            raise HTTPException(400, "Username must be at least 2 characters")
+        if len(body.password) < 6:
+            raise HTTPException(400, "Password must be at least 6 characters")
+        if db.get_user_by_username(username):
+            raise HTTPException(409, "Username already taken")
+        user = db.create_user(username, hash_password(body.password), is_admin=True)
+        token = create_access_token(user["id"], user["username"], user["is_admin"])
+        return {"token": token, "user": {"username": user["username"], "is_admin": user["is_admin"]}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Registration failed: %s", e)
+        raise HTTPException(500, f"Registration failed: {str(e)}")
 
 
 @api.get("/auth/me")
