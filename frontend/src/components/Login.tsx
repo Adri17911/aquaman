@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { login, register } from '../api'
+import type { AuthUser } from '../auth'
 
 interface LoginProps {
-  onLoggedIn: () => void
+  onLoggedIn: (user: AuthUser) => void
 }
 
 export function Login({ onLoggedIn }: LoginProps) {
@@ -17,12 +18,10 @@ export function Login({ onLoggedIn }: LoginProps) {
     setError('')
     setLoading(true)
     try {
-      if (isRegister) {
-        await register(username, password)
-      } else {
-        await login(username, password)
-      }
-      onLoggedIn()
+      const data = isRegister
+        ? await register(username, password)
+        : await login(username, password)
+      onLoggedIn(data.user)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong')
     } finally {

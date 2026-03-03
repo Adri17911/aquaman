@@ -181,9 +181,10 @@ PUBLIC_PATHS = {"/health", "/auth/login", "/auth/register"}
 @api.middleware("http")
 async def require_auth(request: Request, call_next):
     path = request.scope.get("path", request.url.path)
-    # When mounted at /api, path can be "/api/auth/register" or "/auth/register"
+    # When mounted at /api, path can be "/api/auth/login" or "/auth/login"; normalize trailing slash
     if path.startswith("/api") and len(path) > 4:
         path = path[4:] or "/"
+    path = (path or "/").rstrip("/") or "/"
     if path in PUBLIC_PATHS:
         return await call_next(request)
     auth = request.headers.get("Authorization")
