@@ -1,7 +1,9 @@
 const AQUA_TOKEN_KEY = 'aqua-token'
 const AQUA_USER_KEY = 'aqua-user'
 const AQUA_LOGIN_AT_KEY = 'aqua-login-at'
+const AQUA_LAST_AUTH_SUCCESS_KEY = 'aqua-last-auth-success'
 const LOGIN_GRACE_MS = 5000
+const RECENT_AUTH_SUCCESS_MS = 30000
 
 export interface AuthUser {
   username: string
@@ -37,11 +39,33 @@ export function isWithinLoginGrace(): boolean {
   }
 }
 
+/** Record that we just got a successful response (2xx); used to avoid logging out on a single stray 401. */
+export function setLastAuthSuccess(): void {
+  try {
+    sessionStorage.setItem(AQUA_LAST_AUTH_SUCCESS_KEY, String(Date.now()))
+  } catch {
+    /* ignore */
+  }
+}
+
+/** True if we had a successful auth request recently (don't treat one 401 as session expired). */
+export function hasRecentAuthSuccess(withinMs: number = RECENT_AUTH_SUCCESS_MS): boolean {
+  try {
+    const t = sessionStorage.getItem(AQUA_LAST_AUTH_SUCCESS_KEY)
+    if (!t) return false
+    const at = parseInt(t, 10)
+    return !isNaN(at) && Date.now() - at < withinMs
+  } catch {
+    return false
+  }
+}
+
 export function clearToken(): void {
   localStorage.removeItem(AQUA_TOKEN_KEY)
   localStorage.removeItem(AQUA_USER_KEY)
   try {
     sessionStorage.removeItem(AQUA_LOGIN_AT_KEY)
+    sessionStorage.removeItem(AQUA_LAST_AUTH_SUCCESS_KEY)
   } catch {
     /* ignore */
   }

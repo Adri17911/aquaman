@@ -1,4 +1,4 @@
-import { clearToken, getAuthHeaders, isWithinLoginGrace, setStoredUser, setToken } from './auth'
+import { clearToken, getAuthHeaders, hasRecentAuthSuccess, isWithinLoginGrace, setLastAuthSuccess, setStoredUser, setToken } from './auth'
 import type { AuthUser } from './auth'
 
 const API_BASE = '/api'
@@ -89,7 +89,7 @@ export async function deleteUser(userId: number): Promise<void> {
 export const SESSION_EXPIRED_EVENT = 'aqua-session-expired'
 
 function onSessionExpired() {
-  if (isWithinLoginGrace()) return
+  if (isWithinLoginGrace() || hasRecentAuthSuccess()) return
   clearToken()
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT))
@@ -102,6 +102,7 @@ async function fetcher<T>(url: string): Promise<T> {
     onSessionExpired()
     throw new Error('Session expired')
   }
+  if (r.ok) setLastAuthSuccess()
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
@@ -118,6 +119,7 @@ async function authFetch(
     onSessionExpired()
     throw new Error('Session expired')
   }
+  if (r.ok) setLastAuthSuccess()
   return r
 }
 
