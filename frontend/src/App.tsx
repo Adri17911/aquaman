@@ -135,8 +135,8 @@ function App() {
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handler)
   }, [])
 
-  const handleLoggedIn = useCallback(() => {
-    setUser(getStoredUser())
+  const handleLoggedIn = useCallback((user: AuthUser | null) => {
+    setUser(user ?? getStoredUser())
   }, [])
 
   const handleLogout = useCallback(() => {
