@@ -33,7 +33,7 @@ def create_access_token(user_id: int, username: str, is_admin: bool) -> str:
     cfg = load_config()
     now = int(time.time())
     expire = now + cfg.auth.jwt_expire_hours * 3600
-    payload = {"sub": user_id, "username": username, "is_admin": is_admin, "exp": expire, "iat": now}
+    payload = {"sub": str(user_id), "username": username, "is_admin": is_admin, "exp": expire, "iat": now}
     raw = jwt.encode(payload, cfg.auth.jwt_secret, algorithm="HS256")
     return raw if isinstance(raw, str) else raw.decode("utf-8")
 
