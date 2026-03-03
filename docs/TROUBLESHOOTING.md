@@ -21,6 +21,17 @@ Common issues and how to fix them.
 - **Cause:** Request not prefixed with `/api`, or wrong port.
 - **Fix:** Use base URL `http://localhost:8080/api` (or your server). Frontend dev server proxies `/api` to the backend when configured in Vite.
 
+### 401 after login (dashboard loads then back to login)
+
+- **Cause:** A request right after login (e.g. `GET /api/devices`) returns 401, so the app treats the session as expired.
+- **Check backend logs:** You should see either:
+  - `401 path=/devices: missing or invalid Authorization header` → the token is not reaching the server (reverse proxy stripping it, or frontend not sending it).
+  - `401 path=/devices: JWT invalid or expired` and auth log `JWT decode failed: ...` → token is rejected (wrong secret, expired, or multiple backend instances with different `AQUA_JWT_SECRET`).
+- **Fix:**
+  1. **Proxy:** If you use nginx/Traefik/etc. in front of the app, ensure the proxy forwards the `Authorization` header to the backend (e.g. nginx `proxy_set_header Authorization $http_authorization;`).
+  2. **JWT secret:** Set `AQUA_JWT_SECRET` to the same value everywhere (e.g. in Docker env). If you use multiple workers or replicas, they must share the same secret so tokens issued by one are accepted by another.
+  3. **Clock:** Ensure server time is correct; JWT `exp` is time-based.
+
 ---
 
 ## MQTT

@@ -21,7 +21,8 @@ export function Login({ onLoggedIn }: LoginProps) {
       const data = isRegister
         ? await register(username, password)
         : await login(username, password)
-      onLoggedIn(data.user)
+      // Defer so token is committed before AuthenticatedApp hooks run
+      setTimeout(() => onLoggedIn(data.user), 0)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong')
     } finally {
