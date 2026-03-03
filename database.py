@@ -485,10 +485,10 @@ class Database:
             params.append(limit)
 
             rows = conn.execute(
-                f"SELECT ts, {col} as value FROM telemetry WHERE {where_sql} ORDER BY ts ASC LIMIT ?",
+                f"SELECT ts, {col} as value FROM telemetry WHERE {where_sql} ORDER BY ts DESC LIMIT ?",
                 params
             ).fetchall()
-            return [{"ts": r["ts"], "value": r["value"]} for r in rows]
+            return [{"ts": r["ts"], "value": r["value"]} for r in reversed(rows)]
 
     def get_telemetry_multi(
         self,
@@ -498,7 +498,9 @@ class Database:
         to_ts: str | None = None,
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
-        """Return telemetry with multiple metrics for chart overlay."""
+        """Return telemetry with multiple metrics for chart overlay.
+        Fetches the most recent `limit` points in the range so the chart right edge matches current values.
+        """
         valid_cols = {"temp", "lux", "water_voltage", "button_voltage", "water_ok", "heater_on", "led_brightness"}
         cols = [m for m in metrics if m in valid_cols] or ["temp"]
         col_list = ", ".join(cols)
@@ -515,11 +517,12 @@ class Database:
             where_sql = " AND ".join(where_parts)
             params.append(limit)
 
+            # Get most recent points (DESC), then return in chronological order (ASC) for the chart
             rows = conn.execute(
-                f"SELECT ts, {col_list} FROM telemetry WHERE {where_sql} ORDER BY ts ASC LIMIT ?",
+                f"SELECT ts, {col_list} FROM telemetry WHERE {where_sql} ORDER BY ts DESC LIMIT ?",
                 params
             ).fetchall()
-            return [dict(r) for r in rows]
+            return [dict(r) for r in reversed(rows)]
 
     def insert_command(
         self,
