@@ -33,6 +33,14 @@ Common issues and how to fix them.
   3. No firewall blocking the backend → broker (e.g. Docker host to container, or host to host).
 - **Fix:** Start Mosquitto, correct the broker host/port in Settings, save. Backend reconnects automatically. Check backend logs for `MQTT connecting to ...` and any connect errors.
 
+### ESP32 not auto-detected (app and ESP32 must use the same broker)
+
+- **Cause:** The app (backend) and the ESP32 connect to **different** MQTT brokers. The ESP32 is only a **client**; it does not run the broker. Both must connect to the **same** broker (e.g. Mosquitto on your PC or Pi) for the app to see telemetry.
+- **Fix:**
+  1. In the app: **Settings → Broker host** — set this to the **same** IP or hostname as `mqttServer` in your ESP32 sketch (e.g. `192.168.0.250`).
+  2. Ensure Mosquitto is running on that machine and listening on port 1883.
+  3. After saving, the app reconnects; when the ESP32 publishes to `aqua/esp32-01/telemetry` (or your `device_id`), the device appears in the dashboard.
+
 ### Backend connects but no telemetry / devices
 
 - **Cause:** ESP32 not publishing, or wrong topic root / device_id.
@@ -40,7 +48,7 @@ Common issues and how to fix them.
   1. ESP32 is connected to the **same** broker and uses the same **topic_root** (default `aqua`).
   2. Telemetry is published to `aqua/{device_id}/telemetry` with at least `device_id` and `ip` in the JSON.
   3. Backend logs show "Telemetry ..." when it receives a message (check log level).
-- **Fix:** Confirm ESP32 broker IP/port and `deviceId` / `mqttTopicRoot`. Add the device manually in Settings with the same `device_id` so it appears even before first telemetry.
+- **Fix:** Confirm ESP32 broker IP/port and `deviceId` / `mqttTopicRoot`. Set the app’s Broker host to match the ESP32’s `mqttServer`.
 
 ### Commands sent but ESP32 doesn't respond
 

@@ -86,10 +86,19 @@ export async function deleteUser(userId: number): Promise<void> {
   if (!r.ok) throw new Error(await r.text())
 }
 
+export const SESSION_EXPIRED_EVENT = 'aqua-session-expired'
+
+function onSessionExpired() {
+  clearToken()
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT))
+  }
+}
+
 async function fetcher<T>(url: string): Promise<T> {
   const r = await fetch(`${API_BASE}${url}`, { headers: { ...getAuthHeaders() } })
   if (r.status === 401) {
-    clearToken()
+    onSessionExpired()
     throw new Error('Session expired')
   }
   if (!r.ok) throw new Error(await r.text())
@@ -105,7 +114,7 @@ async function authFetch(
     headers: { ...getAuthHeaders(), ...(init.headers as Record<string, string>) },
   })
   if (r.status === 401) {
-    clearToken()
+    onSessionExpired()
     throw new Error('Session expired')
   }
   return r

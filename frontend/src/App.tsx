@@ -3,7 +3,7 @@ import { useSSE } from './hooks/useSSE'
 import { Dashboard } from './components/Dashboard'
 import { Login } from './components/Login'
 import { Settings, getAutoDiscovery, getManualDeviceIds } from './components/Settings'
-import { useDevices, useLatestTelemetry, useHealth, getMe } from './api'
+import { useDevices, useLatestTelemetry, useHealth, getMe, SESSION_EXPIRED_EVENT } from './api'
 import { clearToken, getStoredUser } from './auth'
 import type { AuthUser } from './auth'
 
@@ -127,6 +127,12 @@ function App() {
         clearToken()
         setAuthChecked(true)
       })
+  }, [])
+
+  useEffect(() => {
+    const handler = () => setUser(null)
+    window.addEventListener(SESSION_EXPIRED_EVENT, handler)
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handler)
   }, [])
 
   const handleLoggedIn = useCallback(() => {
