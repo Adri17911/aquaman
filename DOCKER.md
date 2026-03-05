@@ -89,6 +89,17 @@ docker compose up -d
 
 Data (SQLite DB and settings) is stored in the `aqua_data` volume.
 
+## Data persistence (survives redeploy and ESP disconnect)
+
+The app **records every telemetry value** (temp, lux, water, heater, LED, etc.) in a SQLite database. This data is stored on the **`aqua_data`** volume, so it:
+
+- **Survives app redeploy** – `docker compose up -d --build` or restarting the stack keeps the database; the volume is not recreated.
+- **Survives ESP32 unplug** – When the ESP is disconnected, no new data is received, but all **historical data stays** in the DB. When the ESP reconnects, new points are appended.
+
+To avoid losing data when stopping the stack, **do not** use `docker compose down -v` (the `-v` flag removes volumes). Use `docker compose down` so the `aqua_data` volume is kept.
+
+By default, telemetry older than 30 days is purged to limit DB size. To keep data longer or forever, set `AQUA_RETAIN_DAYS` (e.g. `365` for one year, or `0` to keep all data indefinitely). See the environment variables table below.
+
 ## Using an existing MQTT broker on the host
 
 If Mosquitto (or another broker) runs on the host:
@@ -116,6 +127,7 @@ docker run -p 8080:8080 -v aqua_data:/data -e AQUA_DATA_DIR=/data -e AQUA_MQTT_B
 | Variable | Description |
 |----------|-------------|
 | `AQUA_DATA_DIR` | Directory for `aqua.db` and `settings.json` (default: app dir). Set to `/data` in Docker. |
+| `AQUA_RETAIN_DAYS` | Telemetry retention in days (0 = keep forever, 1–3650 = purge older). Default from settings (30). |
 | `AQUA_MQTT_BROKER_HOST` | Override MQTT broker host from settings. |
 | `AQUA_MQTT_BROKER_PORT` | Override MQTT broker port. |
 | `AQUA_MQTT_USE_TLS` | Set to `1` or `true` to connect to the broker with MQTT over TLS. |

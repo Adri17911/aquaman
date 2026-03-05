@@ -113,11 +113,13 @@ async def command_timeout_loop():
 
 
 async def housekeeping_loop():
-    """Purge old telemetry periodically."""
+    """Purge old telemetry periodically (when retain_days > 0)."""
     while True:
         try:
             await asyncio.sleep(60)
             cfg = load_config()
+            if cfg.logging.retain_days <= 0:
+                continue  # 0 = keep all data forever
             purged = db.purge_old_telemetry(cfg.logging.retain_days)
             if purged:
                 logger.info("Purged %d old telemetry rows", purged)
@@ -330,6 +332,26 @@ def get_telemetry_log(
     return {"device_id": device_id, "rows": rows}
 
 
+def _bucket_seconds(bucket: str | None) -> int | None:
+    """Parse bucket string to seconds. Returns None if not bucketed."""
+    if not bucket:
+        return None
+    b = (bucket or "").strip().lower()
+    if b == "1m":
+        return 60
+    if b == "5m":
+        return 300
+    if b == "15m":
+        return 900
+    if b == "1h":
+        return 3600
+    if b == "6h":
+        return 21600
+    if b == "1d":
+        return 86400
+    return None
+
+
 @api.get("/telemetry")
 def get_telemetry_series(
     device_id: str = Query(...),
@@ -338,12 +360,18 @@ def get_telemetry_series(
     from_ts: str | None = Query(None),
     to_ts: str | None = Query(None),
     bucket: str | None = Query(None),
-    agg: str = Query("last"),
-    limit: int = Query(1000, ge=1, le=10000),
+    agg: str = Query("avg"),
+    limit: int = Query(2000, ge=1, le=5000),
 ):
     if metrics:
         ml = [m.strip() for m in metrics.split(",") if m.strip()]
-        rows = db.get_telemetry_multi(device_id, ml, from_ts, to_ts, limit)
+        bucket_sec = _bucket_seconds(bucket)
+        if bucket_sec and from_ts and to_ts:
+            rows = db.get_telemetry_multi_bucketed(
+                device_id, ml, from_ts, to_ts, bucket_sec, agg, limit
+            )
+        else:
+            rows = db.get_telemetry_multi(device_id, ml, from_ts, to_ts, min(limit, 2000))
         return {"device_id": device_id, "metrics": ml, "points": rows}
     points = db.get_telemetry_series(device_id, metric, from_ts, to_ts, bucket, agg, limit)
     return {"device_id": device_id, "metric": metric, "points": points}
@@ -351,22 +379,24 @@ def get_telemetry_series(
 
 @api.post("/devices/{device_id}/commands/heater")
 def heater_command(device_id: str, body: CommandRequest):
-    if not db.device_online(device_id):
-        raise HTTPException(409, "Device offline - command rejected")
+    offline = not db.device_online(device_id)
+    if offline:
+        logger.warning("Heater command for device %s while device offline - sending anyway", device_id)
     try:
         corr_id = mqtt_worker.publish_command(device_id, "heater", body.action, body.payload, "ui")
-        return {"correlation_id": corr_id, "status": "sent"}
+        return {"correlation_id": corr_id, "status": "sent", "device_offline": offline}
     except RuntimeError as e:
         raise HTTPException(503, str(e))
 
 
 @api.post("/devices/{device_id}/commands/led")
 def led_command(device_id: str, body: CommandRequest):
-    if not db.device_online(device_id):
-        raise HTTPException(409, "Device offline - command rejected")
+    offline = not db.device_online(device_id)
+    if offline:
+        logger.warning("LED command for device %s while device offline - sending anyway", device_id)
     try:
         corr_id = mqtt_worker.publish_command(device_id, "led", body.action, body.payload, "ui")
-        return {"correlation_id": corr_id, "status": "sent"}
+        return {"correlation_id": corr_id, "status": "sent", "device_offline": offline}
     except RuntimeError as e:
         raise HTTPException(503, str(e))
 

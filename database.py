@@ -524,6 +524,37 @@ class Database:
             ).fetchall()
             return [dict(r) for r in reversed(rows)]
 
+    def get_telemetry_multi_bucketed(
+        self,
+        device_id: str,
+        metrics: list[str],
+        from_ts: str,
+        to_ts: str,
+        bucket_seconds: int,
+        agg: str = "avg",
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        """Return telemetry aggregated into time buckets for chart (e.g. 1h, 1d). Uses AVG for numeric cols."""
+        valid_cols = {"temp", "lux", "water_voltage", "button_voltage", "water_ok", "heater_on", "led_brightness"}
+        cols = [m for m in metrics if m in valid_cols] or ["temp"]
+        # SQLite: normalize ts to 'YYYY-MM-DD HH:MM:SS', then bucket by epoch seconds
+        # strftime('%s', ...) is server-local; bucket boundaries are in epoch UTC via unixepoch
+        agg_fn = "AVG" if agg == "avg" else "AVG"
+        select_parts = [
+            "datetime((cast(strftime('%s', replace(substr(ts,1,19), 'T', ' ')) as integer) / ?) * ?, 'unixepoch') as ts"
+        ]
+        for c in cols:
+            select_parts.append(f"{agg_fn}({c}) as {c}")
+        select_sql = ", ".join(select_parts)
+        params: list[Any] = [bucket_seconds, bucket_seconds, device_id, from_ts, to_ts, limit]
+        with self._lock, self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT {select_sql} FROM telemetry WHERE device_id = ? AND ts >= ? AND ts <= ? "
+                "GROUP BY 1 ORDER BY ts ASC LIMIT ?",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def insert_command(
         self,
         correlation_id: str,

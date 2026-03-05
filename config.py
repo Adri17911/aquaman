@@ -39,7 +39,8 @@ class MqttSettings(BaseModel):
 
 
 class LoggingSettings(BaseModel):
-    retain_days: int = Field(default=30, ge=1, le=3650)
+    # 0 = keep all telemetry forever; 1–3650 = purge rows older than N days
+    retain_days: int = Field(default=30, ge=0, le=3650)
 
 
 class AuthSettings(BaseModel):
@@ -97,6 +98,13 @@ def load_config() -> AppConfig:
         if os.environ.get("AQUA_JWT_EXPIRE_HOURS"):
             try:
                 _cached_config.auth.jwt_expire_hours = int(os.environ["AQUA_JWT_EXPIRE_HOURS"])
+            except ValueError:
+                pass
+        if os.environ.get("AQUA_RETAIN_DAYS") is not None:
+            try:
+                v = int(os.environ["AQUA_RETAIN_DAYS"])
+                if 0 <= v <= 3650:
+                    _cached_config.logging.retain_days = v
             except ValueError:
                 pass
         return _cached_config

@@ -170,11 +170,13 @@ export async function getTelemetryMulti(
   metrics: string[],
   from?: string,
   to?: string,
-  limit = 500
+  limit = 500,
+  bucket?: string
 ) {
   const params = new URLSearchParams({ device_id: deviceId, metrics: metrics.join(','), limit: String(limit) })
   if (from) params.set('from_ts', from)
   if (to) params.set('to_ts', to)
+  if (bucket) params.set('bucket', bucket)
   return fetcher<{ points: Array<Record<string, string | number | null>> }>(`/telemetry?${params}`)
 }
 

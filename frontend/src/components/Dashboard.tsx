@@ -36,9 +36,17 @@ const METRIC_OPTS: { id: string; label: string; color: string }[] = [
   { id: 'water_voltage', label: 'Water V', color: '#34d399' },
   { id: 'led_brightness', label: 'LED %', color: '#a78bfa' },
 ]
-const RANGES = [1, 6, 24, 168] as const // hours: 1h, 6h, 24h, 7d
+const RANGES = [1, 6, 24, 168, 8760] as const // hours: 1h, 6h, 24h, 7d, 1y
 
 type ChartView = { rangeHours: number; metrics: string[] }
+
+function bucketForRangeHours(rangeHours: number): string | undefined {
+  if (rangeHours <= 1) return undefined
+  if (rangeHours <= 6) return '5m'
+  if (rangeHours <= 24) return '15m'
+  if (rangeHours <= 168) return '1h'
+  return '1d'
+}
 
 export function Dashboard({ deviceId, telemetry }: DashboardProps) {
   const [chartData, setChartData] = useState<Array<Record<string, string | number | null>>>([])
@@ -88,18 +96,24 @@ export function Dashboard({ deviceId, telemetry }: DashboardProps) {
     try {
       const to = new Date()
       const from = new Date(to.getTime() - rangeHours * 60 * 60 * 1000)
+      const bucket = bucketForRangeHours(rangeHours)
+      const limit = bucket ? 2000 : 500
       const res = await getTelemetryMulti(
         deviceId,
         metrics,
         from.toISOString(),
         to.toISOString(),
-        500
+        limit,
+        bucket
       )
+      const isLongRange = rangeHours >= 168
       const points = (res.points || []).map((p: Record<string, string | number | null>) => ({
         ...p,
-        ts: new Date(p.ts as string).toLocaleTimeString(undefined, {
-          month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-        }),
+        ts: isLongRange
+          ? new Date(p.ts as string).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: rangeHours >= 8760 ? '2-digit' : undefined })
+          : new Date(p.ts as string).toLocaleTimeString(undefined, {
+              month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+            }),
         tsRaw: p.ts,
       }))
       setChartData(points)
@@ -121,7 +135,7 @@ export function Dashboard({ deviceId, telemetry }: DashboardProps) {
   }
 
   const zoomIn = () => setRangeHours((h) => Math.max(1, Math.floor(h / 2)))
-  const zoomOut = () => setRangeHours((h) => Math.min(168, h * 2))
+  const zoomOut = () => setRangeHours((h) => Math.min(8760, h * 2))
 
   const saveView = () => {
     localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify({ rangeHours, metrics: selectedMetrics }))
@@ -270,7 +284,7 @@ export function Dashboard({ deviceId, telemetry }: DashboardProps) {
                   rangeHours === h ? 'bg-cyan-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
                 }`}
               >
-                {h < 24 ? `${h}h` : `${h / 24}d`}
+                {h >= 8760 ? '1y' : h < 24 ? `${h}h` : `${h / 24}d`}
               </button>
             ))}
             <button

@@ -68,7 +68,7 @@ The backend creates `settings.json` on first run in the application directory (o
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| retain_days | number | 30 | Telemetry retention in days (1–3650); older rows are purged |
+| retain_days | number | 30 | Telemetry retention: 0 = keep all forever; 1–3650 = purge rows older than N days |
 
 ---
 
@@ -81,6 +81,7 @@ These override settings from `settings.json` and are **not** written back. Usefu
 | Variable | Description |
 |----------|-------------|
 | AQUA_DATA_DIR | Directory for `settings.json` and `aqua.db`. Default: application directory. In Docker set to `/data`. |
+| AQUA_RETAIN_DAYS | Telemetry retention: `0` = keep all forever; `1`–`3650` = purge rows older than N days. Overrides `logging.retain_days` from settings. |
 
 ### MQTT overrides
 
