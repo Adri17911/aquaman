@@ -128,11 +128,19 @@ class Database:
                 conn.execute("ALTER TABLE schedules ADD COLUMN curve_points TEXT")
             except Exception:
                 pass
+            try:
+                conn.execute("ALTER TABLE telemetry ADD COLUMN humidity REAL")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE devices ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+            except Exception:
+                pass
 
     def list_devices(self) -> list[dict[str, Any]]:
         with self._lock, self._conn() as conn:
             rows = conn.execute(
-                "SELECT device_id, name, online, last_seen_ts, last_status_ts, last_ip, capabilities "
+                "SELECT device_id, name, online, last_seen_ts, last_status_ts, last_ip, capabilities, enabled "
                 "FROM devices ORDER BY last_seen_ts DESC"
             ).fetchall()
             result = []
@@ -143,6 +151,7 @@ class Database:
                         caps = json.loads(r["capabilities"])
                     except json.JSONDecodeError:
                         pass
+                enabled = r["enabled"] if "enabled" in r.keys() else 1
                 result.append({
                     "device_id": r["device_id"],
                     "name": r["name"] or r["device_id"],
@@ -151,13 +160,14 @@ class Database:
                     "last_status_ts": r["last_status_ts"],
                     "last_ip": r["last_ip"],
                     "capabilities": caps or {},
+                    "enabled": bool(enabled),
                 })
             return result
 
     def get_device(self, device_id: str) -> dict[str, Any] | None:
         with self._lock, self._conn() as conn:
             row = conn.execute(
-                "SELECT device_id, name, online, last_seen_ts, last_status_ts, last_ip, capabilities "
+                "SELECT device_id, name, online, last_seen_ts, last_status_ts, last_ip, capabilities, enabled "
                 "FROM devices WHERE device_id = ?", (device_id,)
             ).fetchone()
             if not row:
@@ -168,6 +178,7 @@ class Database:
                     caps = json.loads(row["capabilities"])
                 except json.JSONDecodeError:
                     pass
+            enabled = row["enabled"] if "enabled" in row.keys() else 1
             return {
                 "device_id": row["device_id"],
                 "name": row["name"] or row["device_id"],
@@ -176,7 +187,32 @@ class Database:
                 "last_status_ts": row["last_status_ts"],
                 "last_ip": row["last_ip"],
                 "capabilities": caps,
+                "enabled": bool(enabled),
             }
+
+    def update_device(
+        self, device_id: str, name: str | None = None, enabled: bool | None = None
+    ) -> dict[str, Any] | None:
+        dev = self.get_device(device_id)
+        if not dev:
+            return None
+        updates = []
+        params: list[Any] = []
+        if name is not None:
+            updates.append("name = ?")
+            params.append((name or device_id).strip() or device_id)
+        if enabled is not None:
+            updates.append("enabled = ?")
+            params.append(1 if enabled else 0)
+        if not updates:
+            return dev
+        params.append(device_id)
+        with self._lock, self._conn() as conn:
+            conn.execute(
+                f"UPDATE devices SET {', '.join(updates)} WHERE device_id = ?",
+                params,
+            )
+        return self.get_device(device_id)
 
     def device_online(self, device_id: str) -> bool:
         dev = self.get_device(device_id)
@@ -356,10 +392,19 @@ class Database:
             cur = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
             return cur.rowcount > 0
 
+    def _device_capabilities_from_telemetry(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Infer device type from telemetry payload. Room sensor has humidity, no lux/water/heater/led."""
+        has_controller = any(payload.get(k) is not None for k in ("lux", "water", "heater", "led"))
+        if has_controller:
+            return {"heater": True, "led": True}
+        if "humidity" in payload:
+            return {"room_sensor": True, "temp": True, "humidity": True}
+        return {"heater": True, "led": True}
+
     def upsert_device_from_telemetry(self, device_id: str, payload: dict[str, Any]) -> None:
         now = utc_now()
         ip = str(payload.get("ip", "")) or None
-        caps = {"heater": True, "led": True}
+        caps = self._device_capabilities_from_telemetry(payload)
         caps_json = json.dumps(caps)
 
         with self._lock, self._conn() as conn:
@@ -370,7 +415,7 @@ class Database:
                     online = 1,
                     last_seen_ts = excluded.last_seen_ts,
                     last_ip = COALESCE(excluded.last_ip, devices.last_ip),
-                    capabilities = COALESCE(devices.capabilities, excluded.capabilities)
+                    capabilities = excluded.capabilities
             """, (device_id, device_id, now, now, ip, caps_json, now))
 
     def upsert_device_from_status(self, device_id: str, status: str, payload: dict[str, Any]) -> None:
@@ -398,6 +443,7 @@ class Database:
         now = utc_now()
         temp = _float(payload.get("temp"))
         lux = _float(payload.get("lux"))
+        humidity = _float(payload.get("humidity"))
         water_ok = _bool(payload.get("water"))
         heater_on = _bool(payload.get("heater"))
         water_voltage = _float(payload.get("water_voltage"))
@@ -409,10 +455,10 @@ class Database:
 
         with self._lock, self._conn() as conn:
             conn.execute("""
-                INSERT INTO telemetry (ts, device_id, temp, lux, water_ok, heater_on, water_voltage,
+                INSERT INTO telemetry (ts, device_id, temp, lux, humidity, water_ok, heater_on, water_voltage,
                     button_voltage, button_pressed, led_on, led_brightness, raw)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (now, device_id, temp, lux, _sql_bool(water_ok), _sql_bool(heater_on),
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (now, device_id, temp, lux, humidity, _sql_bool(water_ok), _sql_bool(heater_on),
                   water_voltage, button_voltage, _sql_bool(button_pressed),
                   _sql_bool(led_on), led_brightness, raw))
 
@@ -432,15 +478,15 @@ class Database:
             return _row_to_telemetry(row)
 
     def get_telemetry_log(
-        self, device_id: str, limit: int = 100
+        self, device_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
-        """Return recent raw telemetry rows for log viewer."""
+        """Return raw telemetry rows for log viewer (newest first). offset=0 is newest page."""
         with self._lock, self._conn() as conn:
             rows = conn.execute(
-                "SELECT ts, device_id, temp, lux, water_ok, heater_on, water_voltage, "
+                "SELECT ts, device_id, temp, lux, humidity, water_ok, heater_on, water_voltage, "
                 "button_voltage, button_pressed, led_on, led_brightness "
-                "FROM telemetry WHERE device_id = ? ORDER BY ts DESC LIMIT ?",
-                (device_id, limit),
+                "FROM telemetry WHERE device_id = ? ORDER BY ts DESC LIMIT ? OFFSET ?",
+                (device_id, limit, offset),
             ).fetchall()
             return [
                 {
@@ -448,6 +494,7 @@ class Database:
                     "device_id": r["device_id"],
                     "temp": r["temp"],
                     "lux": r["lux"],
+                    "humidity": r["humidity"] if "humidity" in r.keys() else None,
                     "water_ok": bool(r["water_ok"]) if r["water_ok"] is not None else None,
                     "heater_on": bool(r["heater_on"]) if r["heater_on"] is not None else None,
                     "water_voltage": r["water_voltage"],
@@ -469,7 +516,7 @@ class Database:
         agg: str = "last",
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
-        valid_cols = {"temp", "lux", "water_voltage", "button_voltage", "water_ok", "heater_on", "led_brightness"}
+        valid_cols = {"temp", "lux", "humidity", "water_voltage", "button_voltage", "water_ok", "heater_on", "led_brightness"}
         col = metric if metric in valid_cols else "temp"
 
         with self._lock, self._conn() as conn:
@@ -501,7 +548,7 @@ class Database:
         """Return telemetry with multiple metrics for chart overlay.
         Fetches the most recent `limit` points in the range so the chart right edge matches current values.
         """
-        valid_cols = {"temp", "lux", "water_voltage", "button_voltage", "water_ok", "heater_on", "led_brightness"}
+        valid_cols = {"temp", "lux", "humidity", "water_voltage", "button_voltage", "water_ok", "heater_on", "led_brightness"}
         cols = [m for m in metrics if m in valid_cols] or ["temp"]
         col_list = ", ".join(cols)
 
@@ -535,7 +582,7 @@ class Database:
         limit: int = 2000,
     ) -> list[dict[str, Any]]:
         """Return telemetry aggregated into time buckets for chart (e.g. 1h, 1d). Uses AVG for numeric cols."""
-        valid_cols = {"temp", "lux", "water_voltage", "button_voltage", "water_ok", "heater_on", "led_brightness"}
+        valid_cols = {"temp", "lux", "humidity", "water_voltage", "button_voltage", "water_ok", "heater_on", "led_brightness"}
         cols = [m for m in metrics if m in valid_cols] or ["temp"]
         # SQLite: normalize ts to 'YYYY-MM-DD HH:MM:SS', then bucket by epoch seconds
         # strftime('%s', ...) is server-local; bucket boundaries are in epoch UTC via unixepoch
@@ -554,6 +601,56 @@ class Database:
                 params,
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def get_telemetry_multi_device(
+        self,
+        specs: list[tuple[str, list[str]]],
+        from_ts: str,
+        to_ts: str,
+        bucket_seconds: int = 300,
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        """Return time-aligned telemetry for multiple devices for correlation charts.
+        specs: list of (device_id, metrics). Returns list of { ts, device_id__metric: value, ... }.
+        """
+        if not specs:
+            return []
+        valid_cols = {"temp", "lux", "humidity", "water_voltage", "button_voltage", "water_ok", "heater_on", "led_brightness"}
+        per_device: list[list[dict[str, Any]]] = []
+        for device_id, metrics in specs:
+            cols = [m for m in metrics if m in valid_cols] or ["temp"]
+            per_device.append(
+                self.get_telemetry_multi_bucketed(device_id, cols, from_ts, to_ts, bucket_seconds, "avg", limit)
+            )
+        if not per_device:
+            return []
+        # Merge on ts: use first series as base, then left-join others on ts
+        base = per_device[0]
+        if len(per_device) == 1:
+            prefix = f"{specs[0][0]}__"
+            return [{**{"ts": p["ts"]}, **{(prefix + k): v for k, v in p.items() if k != "ts"}} for p in base]
+        key_to_idx: dict[str, int] = {}
+        for i, (dev_id, metrics) in enumerate(specs):
+            for m in metrics:
+                if m in valid_cols:
+                    key_to_idx[f"{dev_id}__{m}"] = (i, m)
+        merged: list[dict[str, Any]] = []
+        for p in base:
+            row: dict[str, Any] = {"ts": p["ts"]}
+            dev_id0, metrics0 = specs[0]
+            for k, v in p.items():
+                if k != "ts":
+                    row[f"{dev_id0}__{k}"] = v
+            for j, (dev_id, metrics) in enumerate(specs[1:], 1):
+                pts = per_device[j]
+                ts_to_pt = {pt["ts"]: pt for pt in pts}
+                other = ts_to_pt.get(p["ts"])
+                if other:
+                    for k, v in other.items():
+                        if k != "ts":
+                            row[f"{dev_id}__{k}"] = v
+            merged.append(row)
+        return merged
 
     def insert_command(
         self,
@@ -714,6 +811,7 @@ def _row_to_telemetry(row: sqlite3.Row) -> dict[str, Any]:
         "device_id": row["device_id"],
         "temp": row["temp"],
         "lux": row["lux"],
+        "humidity": row["humidity"] if "humidity" in keys else None,
         "water_ok": row["water_ok"] is not None and bool(row["water_ok"]) if "water_ok" in keys else None,
         "heater_on": row["heater_on"] is not None and bool(row["heater_on"]) if "heater_on" in keys else None,
         "water_voltage": row["water_voltage"],

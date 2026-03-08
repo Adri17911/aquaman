@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState, useMemo } from 'react'
 import { useSSE } from './hooks/useSSE'
 import { Dashboard } from './components/Dashboard'
+import { Compare } from './components/Compare'
 import { Login } from './components/Login'
 import { Settings, getAutoDiscovery, getManualDeviceIds } from './components/Settings'
-import { useDevices, useLatestTelemetry, useHealth, getMe, SESSION_EXPIRED_EVENT } from './api'
+import { useDevices, useLatestTelemetry, useHealth, getMe, SESSION_EXPIRED_EVENT, type ApiDevice } from './api'
 import { clearToken, getStoredUser } from './auth'
 import type { AuthUser } from './auth'
 
@@ -15,6 +16,7 @@ function AuthenticatedApp({
   onLogout: () => void
 }) {
   const [deviceId, setDeviceId] = useState<string | null>(null)
+  const [view, setView] = useState<'dashboard' | 'compare'>('dashboard')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsVersion, setSettingsVersion] = useState(0)
   const { data: health } = useHealth()
@@ -32,11 +34,15 @@ function AuthenticatedApp({
 
   useEffect(() => {
     if (devices?.length && !deviceId) {
-      setDeviceId(devices[0].device_id)
+      const preferred = devices.find((d) => d.enabled !== false) ?? devices[0]
+      setDeviceId(preferred.device_id)
     } else if (devices && deviceId && !devices.some((d) => d.device_id === deviceId)) {
-      setDeviceId(devices[0]?.device_id ?? null)
+      const preferred = devices.find((d) => d.enabled !== false) ?? devices[0]
+      setDeviceId(preferred?.device_id ?? null)
     }
   }, [devices, deviceId])
+
+  const selectedDevice = devices?.find((d) => d.device_id === deviceId) ?? null
 
   return (
     <div className="min-h-screen">
@@ -49,17 +55,35 @@ function AuthenticatedApp({
             <span className={`text-xs ${health?.mqtt_connected ? 'text-emerald-500' : 'text-amber-500'}`}>
               MQTT {health?.mqtt_connected ? 'connected' : 'disconnected'}
             </span>
+            <nav className="flex gap-1">
+              <button
+                onClick={() => setView('dashboard')}
+                className={`rounded px-2 py-1 text-xs font-medium ${view === 'dashboard' ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}
+              >
+                Dashboard
+              </button>
+              <button
+                onClick={() => setView('compare')}
+                className={`rounded px-2 py-1 text-xs font-medium ${view === 'compare' ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}
+              >
+                Compare
+              </button>
+            </nav>
             {devices && devices.length > 0 && (
               <select
                 value={deviceId ?? ''}
                 onChange={(e) => setDeviceId(e.target.value || null)}
                 className="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
               >
-                {devices.map((d) => (
-                  <option key={d.device_id} value={d.device_id}>
-                    {d.name || d.device_id} {d.online ? '●' : '○'}
-                  </option>
-                ))}
+                {devices.map((d) => {
+                  const typeLabel = d.capabilities?.room_sensor ? 'Room' : 'Controller'
+                  const disabledLabel = d.enabled === false ? ' (disabled)' : ''
+                  return (
+                    <option key={d.device_id} value={d.device_id}>
+                      {d.name || d.device_id} · {typeLabel} {d.online ? '●' : '○'}{disabledLabel}
+                    </option>
+                  )
+                })}
               </select>
             )}
             {apiDevices && apiDevices.length === 0 && !health?.mqtt_connected && (
@@ -102,7 +126,11 @@ function AuthenticatedApp({
         isAdmin={user.is_admin}
       />
       <main className="mx-auto max-w-7xl px-4 py-6">
-        <Dashboard deviceId={deviceId} telemetry={telemetry} />
+        {view === 'compare' ? (
+          <Compare devices={devices} />
+        ) : (
+          <Dashboard deviceId={deviceId} device={selectedDevice} telemetry={telemetry} />
+        )}
       </main>
     </div>
   )

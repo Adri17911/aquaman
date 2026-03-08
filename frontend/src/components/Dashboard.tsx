@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   XAxis,
   YAxis,
@@ -18,12 +18,14 @@ import {
   listSchedules,
   TelemetryPoint,
   useLatestTelemetry,
+  type ApiDevice,
 } from '../api'
 import { Scenarios } from './Scenarios'
 import { SSE_REFETCH_EVENT } from '../hooks/useSSE'
 
 interface DashboardProps {
   deviceId: string | null
+  device: ApiDevice | null
   telemetry: TelemetryPoint | null
 }
 
@@ -32,11 +34,13 @@ const VIEW_STORAGE_KEY = 'aqua-chart-view'
 
 const METRIC_OPTS: { id: string; label: string; color: string }[] = [
   { id: 'temp', label: 'Temp °C', color: '#22d3ee' },
+  { id: 'humidity', label: 'RH %', color: '#38bdf8' },
   { id: 'lux', label: 'Lux', color: '#fbbf24' },
   { id: 'water_voltage', label: 'Water V', color: '#34d399' },
   { id: 'led_brightness', label: 'LED %', color: '#a78bfa' },
 ]
 const RANGES = [1, 6, 24, 168, 8760] as const // hours: 1h, 6h, 24h, 7d, 1y
+const LOG_PAGE_SIZE = 100
 
 type ChartView = { rangeHours: number; metrics: string[] }
 
@@ -48,12 +52,17 @@ function bucketForRangeHours(rangeHours: number): string | undefined {
   return '1d'
 }
 
-export function Dashboard({ deviceId, telemetry }: DashboardProps) {
+const isRoomSensor = (d: ApiDevice | null) => d?.capabilities?.room_sensor === true
+
+export function Dashboard({ deviceId, device, telemetry }: DashboardProps) {
+  const roomSensor = isRoomSensor(device)
   const [chartData, setChartData] = useState<Array<Record<string, string | number | null>>>([])
   const [rangeHours, setRangeHours] = useState(24)
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(['temp'])
   const [dataLog, setDataLog] = useState<TelemetryPoint[]>([])
   const [logOpen, setLogOpen] = useState(false)
+  const [logPage, setLogPage] = useState(0)
+  const logJustOpenedRef = useRef(false)
   const [pendingHeater, setPendingHeater] = useState<string | null>(null)
   const [pendingLed, setPendingLed] = useState<string | null>(null)
   const [brightnessSlider, setBrightnessSlider] = useState<number>(100)
@@ -123,10 +132,10 @@ export function Dashboard({ deviceId, telemetry }: DashboardProps) {
   const loadDataLog = useCallback(async () => {
     if (!deviceId) return
     try {
-      const res = await getTelemetryLog(deviceId, 100)
+      const res = await getTelemetryLog(deviceId, LOG_PAGE_SIZE, logPage * LOG_PAGE_SIZE)
       setDataLog(res.rows || [])
     } catch (_) {}
-  }, [deviceId])
+  }, [deviceId, logPage])
 
   const toggleMetric = (m: string) => {
     setSelectedMetrics((prev) =>
@@ -156,8 +165,25 @@ export function Dashboard({ deviceId, telemetry }: DashboardProps) {
   }, [loadChart])
 
   useEffect(() => {
-    if (logOpen) loadDataLog()
-  }, [logOpen, loadDataLog])
+    if (logOpen) {
+      setLogPage(0)
+      logJustOpenedRef.current = true
+    }
+  }, [logOpen])
+
+  useEffect(() => {
+    if (!logOpen || !deviceId) return
+    if (logJustOpenedRef.current) {
+      logJustOpenedRef.current = false
+      getTelemetryLog(deviceId, LOG_PAGE_SIZE, 0).then((res) => setDataLog(res.rows || []))
+      return
+    }
+    loadDataLog()
+  }, [logOpen, deviceId, loadDataLog])
+
+  const hasOlderLog = dataLog.length >= LOG_PAGE_SIZE
+  const goLogPrev = () => { setLogPage((p) => Math.max(0, p - 1)) }
+  const goLogNext = () => { setLogPage((p) => p + 1) }
 
   useEffect(() => {
     const handler = () => {
@@ -231,6 +257,140 @@ export function Dashboard({ deviceId, telemetry }: DashboardProps) {
   }
 
   const t = telemetry
+
+  if (roomSensor) {
+    const roomMetricOpts = METRIC_OPTS.filter((m) => m.id === 'temp' || m.id === 'humidity')
+    return (
+      <div className="space-y-6">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
+          <Card
+            label="Ambient temp"
+            value={t?.temp != null ? `${t.temp.toFixed(1)} °C` : '-'}
+            variant="temp"
+          />
+          <Card
+            label="Humidity (RH)"
+            value={t?.humidity != null ? `${t.humidity.toFixed(1)} %` : '-'}
+            variant="lux"
+          />
+          <Card
+            label="Last update"
+            value={t?.ts ? new Date(t.ts).toLocaleTimeString() : '-'}
+            variant="neutral"
+          />
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h2 className="font-display text-sm font-medium text-slate-300">Charts</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-500">Time:</span>
+              {RANGES.map((h) => (
+                <button
+                  key={h}
+                  onClick={() => setRangeHours(h)}
+                  className={`rounded px-2 py-1 text-xs font-medium ${
+                    rangeHours === h ? 'bg-cyan-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                  }`}
+                >
+                  {h >= 8760 ? '1y' : h < 24 ? `${h}h` : `${h / 24}d`}
+                </button>
+              ))}
+              <span className="text-xs text-slate-500">Metrics:</span>
+              {roomMetricOpts.map((m) => (
+                <label key={m.id} className="flex cursor-pointer items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={selectedMetrics.includes(m.id)}
+                    onChange={() => toggleMetric(m.id)}
+                    className="rounded border-slate-600"
+                  />
+                  <span className="text-xs text-slate-300">{m.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={chartData}>
+                <defs>
+                  {roomMetricOpts.map((m) => (
+                    <linearGradient key={m.id} id={`color-rs-${m.id}`} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor={m.color} stopOpacity={0.3} />
+                      <stop offset="95%" stopColor={m.color} stopOpacity={0} />
+                    </linearGradient>
+                  ))}
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                <XAxis dataKey="ts" stroke="#64748b" fontSize={10} />
+                <YAxis yAxisId="left" stroke="#64748b" fontSize={10} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155' }}
+                  labelStyle={{ color: '#94a3b8' }}
+                />
+                {(selectedMetrics.length > 0 ? selectedMetrics : ['temp']).map((mk) => {
+                  const opt = roomMetricOpts.find((o) => o.id === mk)
+                  if (!opt) return null
+                  return (
+                    <Area
+                      key={mk}
+                      yAxisId="left"
+                      type="monotone"
+                      dataKey={mk}
+                      stroke={opt.color}
+                      fill={`url(#color-rs-${mk})`}
+                      strokeWidth={2}
+                      name={opt.label}
+                    />
+                  )
+                })}
+                <Brush dataKey="ts" height={24} stroke="#334155" fill="#0f172a" />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+          <button
+            onClick={() => setLogOpen(!logOpen)}
+            className="flex w-full items-center justify-between font-display text-sm font-medium text-slate-300 hover:text-slate-200"
+          >
+            Data log
+            <span className="text-slate-500">{logOpen ? '▼' : '▶'}</span>
+          </button>
+          {logOpen && (
+            <>
+              <div className="mt-3 flex items-center justify-between gap-2 border-b border-slate-800 pb-2">
+                <span className="text-xs text-slate-500">Page {logPage + 1} · Newest first</span>
+                <div className="flex gap-1">
+                  <button type="button" onClick={goLogPrev} disabled={logPage === 0} className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed">← Newer</button>
+                  <button type="button" onClick={goLogNext} disabled={!hasOlderLog} className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed">Older →</button>
+                </div>
+              </div>
+              <div className="mt-2 max-h-64 overflow-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-slate-500">
+                      <th className="px-2 py-1">Time</th>
+                      <th className="px-2 py-1">Temp</th>
+                      <th className="px-2 py-1">Humidity</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dataLog.map((r, i) => (
+                      <tr key={i} className="border-t border-slate-800 text-slate-300">
+                        <td className="px-2 py-1">{new Date(r.ts).toLocaleString()}</td>
+                        <td className="px-2 py-1">{r.temp != null ? r.temp.toFixed(1) : '-'}</td>
+                        <td className="px-2 py-1">{r.humidity != null ? `${r.humidity.toFixed(1)} %` : '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -368,32 +528,59 @@ export function Dashboard({ deviceId, telemetry }: DashboardProps) {
           <span className="text-slate-500">{logOpen ? '▼' : '▶'}</span>
         </button>
         {logOpen && (
-          <div className="mt-3 max-h-64 overflow-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-slate-500">
-                  <th className="px-2 py-1">Time</th>
-                  <th className="px-2 py-1">Temp</th>
-                  <th className="px-2 py-1">Lux</th>
-                  <th className="px-2 py-1">Water</th>
-                  <th className="px-2 py-1">Heater</th>
-                  <th className="px-2 py-1">LED</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dataLog.map((r, i) => (
-                  <tr key={i} className="border-t border-slate-800 text-slate-300">
-                    <td className="px-2 py-1">{new Date(r.ts).toLocaleString()}</td>
-                    <td className="px-2 py-1">{r.temp != null ? r.temp.toFixed(1) : '-'}</td>
-                    <td className="px-2 py-1">{r.lux != null ? Math.round(r.lux) : '-'}</td>
-                    <td className="px-2 py-1">{r.water_ok === true ? 'OK' : r.water_ok === false ? 'ALARM' : '-'}</td>
-                    <td className="px-2 py-1">{r.heater_on ? 'ON' : r.heater_on === false ? 'OFF' : '-'}</td>
-                    <td className="px-2 py-1">{r.led_on ? `${r.led_brightness ?? 0}%` : r.led_on === false ? 'OFF' : '-'}</td>
+          <>
+            <div className="mt-3 flex items-center justify-between gap-2 border-b border-slate-800 pb-2">
+              <span className="text-xs text-slate-500">
+                Page {logPage + 1} · Newest first
+              </span>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={goLogPrev}
+                  disabled={logPage === 0}
+                  className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  ← Newer
+                </button>
+                <button
+                  type="button"
+                  onClick={goLogNext}
+                  disabled={!hasOlderLog}
+                  className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Older →
+                </button>
+              </div>
+            </div>
+            <div className="mt-2 max-h-64 overflow-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-slate-500">
+                    <th className="px-2 py-1">Time</th>
+                    <th className="px-2 py-1">Temp</th>
+                    <th className="px-2 py-1">Lux</th>
+                    <th className="px-2 py-1">Humidity</th>
+                    <th className="px-2 py-1">Water</th>
+                    <th className="px-2 py-1">Heater</th>
+                    <th className="px-2 py-1">LED</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {dataLog.map((r, i) => (
+                    <tr key={i} className="border-t border-slate-800 text-slate-300">
+                      <td className="px-2 py-1">{new Date(r.ts).toLocaleString()}</td>
+                      <td className="px-2 py-1">{r.temp != null ? r.temp.toFixed(1) : '-'}</td>
+                      <td className="px-2 py-1">{r.lux != null ? Math.round(r.lux) : '-'}</td>
+                      <td className="px-2 py-1">{r.humidity != null ? `${r.humidity.toFixed(1)} %` : '-'}</td>
+                      <td className="px-2 py-1">{r.water_ok === true ? 'OK' : r.water_ok === false ? 'ALARM' : '-'}</td>
+                      <td className="px-2 py-1">{r.heater_on ? 'ON' : r.heater_on === false ? 'OFF' : '-'}</td>
+                      <td className="px-2 py-1">{r.led_on ? `${r.led_brightness ?? 0}%` : r.led_on === false ? 'OFF' : '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </div>
 

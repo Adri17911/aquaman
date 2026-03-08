@@ -47,6 +47,11 @@ class AddDeviceRequest(BaseModel):
     name: str | None = None
 
 
+class UpdateDeviceRequest(BaseModel):
+    name: str | None = None
+    enabled: bool | None = None
+
+
 class MqttSettingsUpdate(BaseModel):
     broker_host: str | None = None
     broker_port: int | None = Field(None, ge=1, le=65535)
@@ -315,6 +320,21 @@ def get_device(device_id: str):
     return {"device": dev, "latest_telemetry": latest}
 
 
+@api.patch("/devices/{device_id}")
+def update_device(device_id: str, body: UpdateDeviceRequest):
+    dev = db.get_device(device_id)
+    if not dev:
+        raise HTTPException(404, f"Device {device_id} not found")
+    updated = db.update_device(
+        device_id,
+        name=body.name,
+        enabled=body.enabled,
+    )
+    if not updated:
+        raise HTTPException(404, f"Device {device_id} not found")
+    return {"device": updated, "status": "updated"}
+
+
 @api.get("/telemetry/latest")
 def get_latest_telemetry(device_id: str | None = Query(None)):
     latest = db.get_latest_telemetry(device_id)
@@ -326,9 +346,10 @@ def get_latest_telemetry(device_id: str | None = Query(None)):
 @api.get("/telemetry/log")
 def get_telemetry_log(
     device_id: str = Query(...),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=100_000),
 ):
-    rows = db.get_telemetry_log(device_id, limit)
+    rows = db.get_telemetry_log(device_id, limit, offset)
     return {"device_id": device_id, "rows": rows}
 
 
@@ -377,8 +398,44 @@ def get_telemetry_series(
     return {"device_id": device_id, "metric": metric, "points": points}
 
 
+@api.get("/telemetry/multi_device")
+def get_telemetry_multi_device(
+    devices: str = Query(..., description="device_id:metric1,metric2|device_id2:metric1"),
+    from_ts: str = Query(...),
+    to_ts: str = Query(...),
+    bucket: str = Query("5m"),
+    limit: int = Query(2000, ge=1, le=5000),
+):
+    """Time-aligned telemetry for multiple devices (correlation). Example: devices=room-sensor-01:temp,humidity|controller-01:temp"""
+    specs: list[tuple[str, list[str]]] = []
+    for part in devices.split("|"):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        dev_id, rest = part.split(":", 1)
+        dev_id = dev_id.strip()
+        metrics = [m.strip() for m in rest.split(",") if m.strip()]
+        if dev_id and metrics:
+            specs.append((dev_id, metrics))
+    if not specs:
+        raise HTTPException(400, "devices query must be device_id:metric1,metric2|...")
+    bucket_sec = _bucket_seconds(bucket) or 300
+    points = db.get_telemetry_multi_device(specs, from_ts, to_ts, bucket_sec, limit)
+    return {"specs": [{"device_id": d, "metrics": m} for d, m in specs], "points": points}
+
+
+def _device_has_controller_capability(device_id: str) -> bool:
+    dev = db.get_device(device_id)
+    if not dev:
+        return False
+    caps = dev.get("capabilities") or {}
+    return bool(caps.get("heater") or caps.get("led"))
+
+
 @api.post("/devices/{device_id}/commands/heater")
 def heater_command(device_id: str, body: CommandRequest):
+    if not _device_has_controller_capability(device_id):
+        raise HTTPException(405, "Device does not support heater commands")
     offline = not db.device_online(device_id)
     if offline:
         logger.warning("Heater command for device %s while device offline - sending anyway", device_id)
@@ -391,6 +448,8 @@ def heater_command(device_id: str, body: CommandRequest):
 
 @api.post("/devices/{device_id}/commands/led")
 def led_command(device_id: str, body: CommandRequest):
+    if not _device_has_controller_capability(device_id):
+        raise HTTPException(405, "Device does not support LED commands")
     offline = not db.device_online(device_id)
     if offline:
         logger.warning("LED command for device %s while device offline - sending anyway", device_id)

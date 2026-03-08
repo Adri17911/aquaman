@@ -127,15 +127,39 @@ export async function getHealth() {
   return fetcher<{ status: string; mqtt_connected: boolean; mqtt_broker: string | null; devices_count: number }>('/health')
 }
 
-export async function getDevices() {
-  return fetcher<Array<{ device_id: string; name: string; online: boolean; last_seen_ts: string | null }>>('/devices')
+export interface ApiDevice {
+  device_id: string
+  name: string
+  online: boolean
+  last_seen_ts: string | null
+  last_status_ts?: string | null
+  last_ip?: string | null
+  capabilities?: Record<string, boolean>
+  enabled?: boolean
 }
 
-export async function addDevice(deviceId: string, name?: string): Promise<{ device: { device_id: string; name: string }; status: string }> {
+export async function getDevices() {
+  return fetcher<ApiDevice[]>('/devices')
+}
+
+export async function addDevice(deviceId: string, name?: string): Promise<{ device: ApiDevice; status: string }> {
   const r = await authFetch('/devices', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ device_id: deviceId.trim(), name: name?.trim() || undefined }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function updateDevice(
+  deviceId: string,
+  updates: { name?: string; enabled?: boolean }
+): Promise<{ device: ApiDevice; status: string }> {
+  const r = await authFetch(`/devices/${encodeURIComponent(deviceId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
   })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
@@ -147,8 +171,8 @@ export async function getLatestTelemetry(deviceId: string | null) {
   return fetcher<TelemetryPoint | null>(`/telemetry/latest${q}`).catch(() => null)
 }
 
-export async function getTelemetryLog(deviceId: string, limit = 100) {
-  const params = new URLSearchParams({ device_id: deviceId, limit: String(limit) })
+export async function getTelemetryLog(deviceId: string, limit = 100, offset = 0) {
+  const params = new URLSearchParams({ device_id: deviceId, limit: String(limit), offset: String(offset) })
   return fetcher<{ device_id: string; rows: TelemetryPoint[] }>(`/telemetry/log?${params}`)
 }
 
@@ -178,6 +202,27 @@ export async function getTelemetryMulti(
   if (to) params.set('to_ts', to)
   if (bucket) params.set('bucket', bucket)
   return fetcher<{ points: Array<Record<string, string | number | null>> }>(`/telemetry?${params}`)
+}
+
+/** Time-aligned multi-device telemetry for correlation. Example: devicesSpec = "room-sensor-01:temp,humidity|controller-01:temp" */
+export async function getTelemetryMultiDevice(
+  devicesSpec: string,
+  fromTs: string,
+  toTs: string,
+  bucket = '5m',
+  limit = 2000
+) {
+  const params = new URLSearchParams({
+    devices: devicesSpec,
+    from_ts: fromTs,
+    to_ts: toTs,
+    bucket,
+    limit: String(limit),
+  })
+  return fetcher<{
+    specs: Array<{ device_id: string; metrics: string[] }>
+    points: Array<Record<string, string | number | null>>
+  }>(`/telemetry/multi_device?${params}`)
 }
 
 export async function sendHeaterCommand(deviceId: string, action: 'on' | 'off' | 'toggle') {
@@ -333,6 +378,7 @@ export interface TelemetryPoint {
   device_id: string
   temp: number | null
   lux: number | null
+  humidity: number | null
   water_ok: boolean | null
   heater_on: boolean | null
   water_voltage: number | null

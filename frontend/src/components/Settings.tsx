@@ -1,5 +1,13 @@
 import { useState, useEffect } from 'react'
-import { getHealth, getMqttSettings, updateMqttSettings } from '../api'
+import {
+  getHealth,
+  getMqttSettings,
+  updateMqttSettings,
+  getDevices,
+  addDevice,
+  updateDevice,
+  type ApiDevice,
+} from '../api'
 
 const STORAGE_KEY_AUTO_DISCOVERY = 'aqua-auto-discovery'
 const STORAGE_KEY_MANUAL_DEVICES = 'aqua-manual-devices'
@@ -47,6 +55,13 @@ export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
   const [mqttBrokerHost, setMqttBrokerHost] = useState('')
   const [mqttSaveError, setMqttSaveError] = useState('')
   const [mqttSaveSuccess, setMqttSaveSuccess] = useState(false)
+  const [devices, setDevices] = useState<ApiDevice[]>([])
+  const [deviceManageError, setDeviceManageError] = useState('')
+  const [addDeviceId, setAddDeviceId] = useState('')
+  const [addDeviceName, setAddDeviceName] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [editingName, setEditingName] = useState<Record<string, string>>({})
+  const [togglingEnabled, setTogglingEnabled] = useState<string | null>(null)
 
   useEffect(() => {
     if (isOpen) {
@@ -55,6 +70,7 @@ export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
         setMqttSettings(s)
         setMqttBrokerHost(s.broker_host)
       }).catch(() => setMqttSettings(null))
+      getDevices().then(setDevices).catch(() => setDevices([]))
     }
   }, [isOpen])
 
@@ -72,6 +88,62 @@ export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
       setTimeout(() => setMqttSaveSuccess(false), 2000)
     } catch (err) {
       setMqttSaveError(err instanceof Error ? err.message : 'Failed to save')
+    }
+  }
+
+  const handleAddDevice = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setDeviceManageError('')
+    const id = addDeviceId.trim()
+    if (!id) return
+    setAdding(true)
+    try {
+      await addDevice(id, addDeviceName.trim() || undefined)
+      setAddDeviceId('')
+      setAddDeviceName('')
+      const list = await getDevices()
+      setDevices(list)
+      onSettingsChange?.()
+    } catch (err) {
+      setDeviceManageError(err instanceof Error ? err.message : 'Failed to add device')
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  const handleUpdateName = async (deviceId: string) => {
+    const name = editingName[deviceId]
+    if (name === undefined) return
+    setDeviceManageError('')
+    try {
+      await updateDevice(deviceId, { name: name.trim() || deviceId })
+      setEditingName((prev) => {
+        const next = { ...prev }
+        delete next[deviceId]
+        return next
+      })
+      const list = await getDevices()
+      setDevices(list)
+      onSettingsChange?.()
+    } catch (err) {
+      setDeviceManageError(err instanceof Error ? err.message : 'Failed to update name')
+    }
+  }
+
+  const handleToggleEnabled = async (deviceId: string) => {
+    const dev = devices.find((d) => d.device_id === deviceId)
+    if (dev?.enabled === undefined) return
+    setTogglingEnabled(deviceId)
+    setDeviceManageError('')
+    try {
+      await updateDevice(deviceId, { enabled: !dev.enabled })
+      const list = await getDevices()
+      setDevices(list)
+      onSettingsChange?.()
+    } catch (err) {
+      setDeviceManageError(err instanceof Error ? err.message : 'Failed to update')
+    } finally {
+      setTogglingEnabled(null)
     }
   }
 
@@ -145,6 +217,108 @@ export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
                 </span>
                 {!health?.mqtt_connected && ' — Ensure Mosquitto is running and the host is correct.'}
               </p>
+            </section>
+
+            <section className="mb-6">
+              <h3 className="mb-3 text-sm font-medium text-slate-300">Device management</h3>
+              {deviceManageError && <p className="mb-2 text-sm text-rose-400">{deviceManageError}</p>}
+              <div className="mb-4 space-y-2">
+                {devices.map((d) => {
+                  const typeLabel = d.capabilities?.room_sensor ? 'Room sensor' : 'Controller'
+                  const nameVal = editingName[d.device_id] ?? d.name ?? d.device_id
+                  return (
+                    <div
+                      key={d.device_id}
+                      className={`rounded-lg border p-3 ${d.enabled === false ? 'border-slate-700 bg-slate-800/50' : 'border-slate-700 bg-slate-800'}`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          {editingName[d.device_id] !== undefined ? (
+                            <div className="flex gap-1">
+                              <input
+                                type="text"
+                                value={nameVal}
+                                onChange={(e) => setEditingName((prev) => ({ ...prev, [d.device_id]: e.target.value }))}
+                                className="flex-1 rounded border border-slate-600 bg-slate-700 px-2 py-1 text-sm text-slate-200"
+                                placeholder="Display name"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateName(d.device_id)}
+                                className="rounded bg-cyan-600 px-2 py-1 text-xs text-white hover:bg-cyan-500"
+                              >
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingName((prev) => { const next = { ...prev }; delete next[d.device_id]; return next })}
+                                className="rounded bg-slate-600 px-2 py-1 text-xs text-slate-300 hover:bg-slate-500"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="truncate font-medium text-slate-200" title={d.device_id}>
+                              {d.name || d.device_id}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <span className="text-xs text-slate-500">{typeLabel}</span>
+                          <span className={`text-xs ${d.online ? 'text-emerald-400' : 'text-slate-500'}`}>
+                            {d.online ? '●' : '○'}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleEnabled(d.device_id)}
+                            disabled={togglingEnabled === d.device_id}
+                            title={d.enabled === false ? 'Enable device' : 'Disable device'}
+                            className={`rounded px-2 py-1 text-xs ${d.enabled === false ? 'bg-amber-600/80 text-white hover:bg-amber-500' : 'bg-slate-600 text-slate-300 hover:bg-slate-500'} disabled:opacity-50`}
+                          >
+                            {togglingEnabled === d.device_id ? '…' : d.enabled === false ? 'Disabled' : 'Enabled'}
+                          </button>
+                          {editingName[d.device_id] === undefined && (
+                            <button
+                              type="button"
+                              onClick={() => setEditingName((prev) => ({ ...prev, [d.device_id]: d.name ?? d.device_id }))}
+                              className="rounded bg-slate-600 px-2 py-1 text-xs text-slate-300 hover:bg-slate-500"
+                            >
+                              Edit name
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <p className="mt-1 truncate text-xs text-slate-500">{d.device_id}</p>
+                    </div>
+                  )
+                })}
+              </div>
+              <form onSubmit={handleAddDevice} className="space-y-2">
+                <p className="text-xs text-slate-500">Add a device by ID (e.g. before it sends data):</p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={addDeviceId}
+                    onChange={(e) => setAddDeviceId(e.target.value)}
+                    placeholder="device-id"
+                    className="flex-1 rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-500"
+                  />
+                  <input
+                    type="text"
+                    value={addDeviceName}
+                    onChange={(e) => setAddDeviceName(e.target.value)}
+                    placeholder="Name (optional)"
+                    className="w-28 rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-500"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={adding || !addDeviceId.trim()}
+                  className="w-full rounded-lg bg-slate-600 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-500 disabled:opacity-50"
+                >
+                  {adding ? 'Adding…' : 'Add device'}
+                </button>
+              </form>
             </section>
           </div>
         </div>
