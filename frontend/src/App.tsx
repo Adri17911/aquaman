@@ -4,7 +4,7 @@ import { Dashboard } from './components/Dashboard'
 import { Compare } from './components/Compare'
 import { Login } from './components/Login'
 import { Settings, getAutoDiscovery, getManualDeviceIds } from './components/Settings'
-import { useDevices, useLatestTelemetry, useHealth, getMe, SESSION_EXPIRED_EVENT, type ApiDevice } from './api'
+import { useDevices, useLatestTelemetry, useHealth, getMe, SESSION_EXPIRED_EVENT } from './api'
 import { clearToken, getStoredUser } from './auth'
 import type { AuthUser } from './auth'
 
