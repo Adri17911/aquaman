@@ -104,7 +104,10 @@ export function Compare({ devices }: CompareProps) {
 
   const addSeries = () => {
     const firstId = devices?.[0]?.device_id ?? ''
-    setSeries((prev) => [...prev, { id: crypto.randomUUID(), deviceId: firstId, metric: 'temp' }])
+    const id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `series-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    setSeries((prev) => [...prev, { id, deviceId: firstId, metric: 'temp' }])
   }
 
   const removeSeries = (id: string) => {
