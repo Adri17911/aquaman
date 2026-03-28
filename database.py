@@ -136,6 +136,18 @@ class Database:
                 conn.execute("ALTER TABLE devices ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
             except Exception:
                 pass
+            for col_sql in (
+                "ALTER TABLE telemetry ADD COLUMN filter_ble_connected INTEGER",
+                "ALTER TABLE telemetry ADD COLUMN filter_power INTEGER",
+                "ALTER TABLE telemetry ADD COLUMN filter_mode TEXT",
+                "ALTER TABLE telemetry ADD COLUMN filter_state_blob_hex TEXT",
+                "ALTER TABLE telemetry ADD COLUMN filter_ble_error TEXT",
+                "ALTER TABLE telemetry ADD COLUMN filter_last_address TEXT",
+            ):
+                try:
+                    conn.execute(col_sql)
+                except Exception:
+                    pass
 
     def list_devices(self) -> list[dict[str, Any]]:
         with self._lock, self._conn() as conn:
@@ -451,16 +463,31 @@ class Database:
         button_pressed = _bool(payload.get("button_pressed"))
         led_on = _bool(payload.get("led"))
         led_brightness = _int(payload.get("led_brightness"))
+        filter_ble_connected = _bool(payload.get("filter_ble_connected"))
+        filter_power = _bool(payload.get("filter_power"))
+        filter_mode = payload.get("filter_mode")
+        filter_mode_s = str(filter_mode).strip() if filter_mode is not None else None
+        filter_state_blob_hex = payload.get("filter_state_blob_hex")
+        filter_state_hex_s = str(filter_state_blob_hex).strip() if filter_state_blob_hex is not None else None
+        filter_ble_error = payload.get("filter_ble_error")
+        filter_err_s = str(filter_ble_error).strip() if filter_ble_error is not None else None
+        fla = payload.get("filter_last_address")
+        filter_last_addr_s = str(fla).strip() if fla is not None else None
         raw = json.dumps(payload)
 
         with self._lock, self._conn() as conn:
             conn.execute("""
                 INSERT INTO telemetry (ts, device_id, temp, lux, humidity, water_ok, heater_on, water_voltage,
-                    button_voltage, button_pressed, led_on, led_brightness, raw)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    button_voltage, button_pressed, led_on, led_brightness,
+                    filter_ble_connected, filter_power, filter_mode, filter_state_blob_hex, filter_ble_error,
+                    filter_last_address, raw)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (now, device_id, temp, lux, humidity, _sql_bool(water_ok), _sql_bool(heater_on),
                   water_voltage, button_voltage, _sql_bool(button_pressed),
-                  _sql_bool(led_on), led_brightness, raw))
+                  _sql_bool(led_on), led_brightness,
+                  _sql_bool(filter_ble_connected), _sql_bool(filter_power),
+                  filter_mode_s, filter_state_hex_s, filter_err_s,
+                  filter_last_addr_s, raw))
 
     def get_latest_telemetry(self, device_id: str | None = None) -> dict[str, Any] | None:
         with self._lock, self._conn() as conn:
@@ -484,7 +511,8 @@ class Database:
         with self._lock, self._conn() as conn:
             rows = conn.execute(
                 "SELECT ts, device_id, temp, lux, humidity, water_ok, heater_on, water_voltage, "
-                "button_voltage, button_pressed, led_on, led_brightness "
+                "button_voltage, button_pressed, led_on, led_brightness, "
+                "filter_ble_connected, filter_power, filter_mode, filter_state_blob_hex, filter_ble_error, filter_last_address "
                 "FROM telemetry WHERE device_id = ? ORDER BY ts DESC LIMIT ? OFFSET ?",
                 (device_id, limit, offset),
             ).fetchall()
@@ -502,6 +530,12 @@ class Database:
                     "button_pressed": bool(r["button_pressed"]) if r["button_pressed"] is not None else None,
                     "led_on": bool(r["led_on"]) if r["led_on"] is not None else None,
                     "led_brightness": r["led_brightness"],
+                    "filter_ble_connected": bool(r["filter_ble_connected"]) if "filter_ble_connected" in r.keys() and r["filter_ble_connected"] is not None else None,
+                    "filter_power": bool(r["filter_power"]) if "filter_power" in r.keys() and r["filter_power"] is not None else None,
+                    "filter_mode": r["filter_mode"] if "filter_mode" in r.keys() else None,
+                    "filter_state_blob_hex": r["filter_state_blob_hex"] if "filter_state_blob_hex" in r.keys() else None,
+                    "filter_ble_error": r["filter_ble_error"] if "filter_ble_error" in r.keys() else None,
+                    "filter_last_address": r["filter_last_address"] if "filter_last_address" in r.keys() else None,
                 }
                 for r in rows
             ]
@@ -819,6 +853,12 @@ def _row_to_telemetry(row: sqlite3.Row) -> dict[str, Any]:
         "button_pressed": row["button_pressed"] is not None and bool(row["button_pressed"]) if "button_pressed" in keys else None,
         "led_on": bool(row["led_on"]) if "led_on" in keys and row["led_on"] is not None else None,
         "led_brightness": row["led_brightness"] if "led_brightness" in keys else None,
+        "filter_ble_connected": bool(row["filter_ble_connected"]) if "filter_ble_connected" in keys and row["filter_ble_connected"] is not None else None,
+        "filter_power": bool(row["filter_power"]) if "filter_power" in keys and row["filter_power"] is not None else None,
+        "filter_mode": row["filter_mode"] if "filter_mode" in keys else None,
+        "filter_state_blob_hex": row["filter_state_blob_hex"] if "filter_state_blob_hex" in keys else None,
+        "filter_ble_error": row["filter_ble_error"] if "filter_ble_error" in keys else None,
+        "filter_last_address": row["filter_last_address"] if "filter_last_address" in keys else None,
     }
 
 

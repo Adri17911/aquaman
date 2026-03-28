@@ -21,6 +21,7 @@ import {
   type ApiDevice,
 } from '../api'
 import { Scenarios } from './Scenarios'
+import { FilterPanel } from './FilterPanel'
 import { SSE_REFETCH_EVENT } from '../hooks/useSSE'
 
 interface DashboardProps {
@@ -658,6 +659,8 @@ export function Dashboard({ deviceId, device, telemetry }: DashboardProps) {
         <Scenarios deviceId={deviceId} onSchedulesChange={refetchCurveState} />
         </div>
       </div>
+
+      <FilterPanel deviceId={deviceId} telemetry={t} refetchTelemetry={refetch} />
     </div>
   )
 }

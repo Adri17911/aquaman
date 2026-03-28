@@ -432,6 +432,11 @@ def _device_has_controller_capability(device_id: str) -> bool:
     return bool(caps.get("heater") or caps.get("led"))
 
 
+def _device_has_filter_bridge_capability(device_id: str) -> bool:
+    """UltraMax BT bridge runs on aquarium controllers (same capability gate as heater/LED)."""
+    return _device_has_controller_capability(device_id)
+
+
 @api.post("/devices/{device_id}/commands/heater")
 def heater_command(device_id: str, body: CommandRequest):
     if not _device_has_controller_capability(device_id):
@@ -458,6 +463,58 @@ def led_command(device_id: str, body: CommandRequest):
         return {"correlation_id": corr_id, "status": "sent", "device_offline": offline}
     except RuntimeError as e:
         raise HTTPException(503, str(e))
+
+
+_FILTER_ACTIONS = frozenset({
+    "connect",
+    "disconnect",
+    "on",
+    "off",
+    "mode_constant",
+    "mode_pulse",
+    "mode_dashed",
+    "mode_sine",
+    "read_state",
+})
+
+
+@api.post("/devices/{device_id}/commands/filter")
+def filter_command(device_id: str, body: CommandRequest):
+    if not _device_has_filter_bridge_capability(device_id):
+        raise HTTPException(405, "Device does not support filter bridge commands")
+    action = (body.action or "").strip().lower()
+    if action not in _FILTER_ACTIONS:
+        raise HTTPException(400, f"Unknown filter action: {body.action}")
+    offline = not db.device_online(device_id)
+    if offline:
+        logger.warning("Filter command for device %s while device offline - sending anyway", device_id)
+    try:
+        corr_id = mqtt_worker.publish_command(device_id, "filter", action, body.payload, "ui")
+        return {"correlation_id": corr_id, "status": "sent", "device_offline": offline}
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+
+
+@api.get("/devices/{device_id}/filter/state")
+def filter_state(device_id: str):
+    """Latest filter bridge status from most recent telemetry (ESP32 publishes filter_* fields)."""
+    if not _device_has_filter_bridge_capability(device_id):
+        raise HTTPException(405, "Device does not support filter bridge")
+    t = db.get_latest_telemetry(device_id)
+    if not t:
+        raise HTTPException(404, "No telemetry for device")
+    return {
+        "success": True,
+        "message": "ok",
+        "device_id": device_id,
+        "ble_connected": t.get("filter_ble_connected"),
+        "current_filter_power": t.get("filter_power"),
+        "current_filter_mode": t.get("filter_mode"),
+        "last_state_blob_hex": t.get("filter_state_blob_hex"),
+        "last_ble_error": t.get("filter_ble_error"),
+        "filter_last_address": t.get("filter_last_address"),
+        "telemetry_ts": t.get("ts"),
+    }
 
 
 @api.get("/commands/{correlation_id}")

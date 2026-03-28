@@ -249,6 +249,31 @@ export async function sendLedCommand(
   return r.json() as Promise<{ correlation_id: string; status: string }>
 }
 
+export async function sendFilterCommand(deviceId: string, action: string) {
+  const r = await authFetch(`/devices/${encodeURIComponent(deviceId)}/commands/filter`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json() as Promise<{ correlation_id: string; status: string }>
+}
+
+export async function getFilterState(deviceId: string) {
+  return fetcher<{
+    success: boolean
+    message: string
+    device_id: string
+    ble_connected: boolean | null
+    current_filter_power: boolean | null
+    current_filter_mode: string | null
+    last_state_blob_hex: string | null
+    last_ble_error: string | null
+    filter_last_address: string | null
+    telemetry_ts: string | null
+  }>(`/devices/${encodeURIComponent(deviceId)}/filter/state`)
+}
+
 export async function getCommandStatus(correlationId: string) {
   return fetcher<{ status: string; acked_at: string | null }>(`/commands/${correlationId}`)
 }
@@ -386,6 +411,12 @@ export interface TelemetryPoint {
   button_pressed: boolean | null
   led_on?: boolean | null
   led_brightness?: number | null
+  filter_ble_connected?: boolean | null
+  filter_power?: boolean | null
+  filter_mode?: string | null
+  filter_state_blob_hex?: string | null
+  filter_ble_error?: string | null
+  filter_last_address?: string | null
 }
 
 // React hooks with simple polling + SSE invalidation
