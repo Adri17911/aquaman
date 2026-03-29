@@ -464,7 +464,7 @@ export function useDevices(intervalMs = 5000) {
   return { data, refetch }
 }
 
-export function useLatestTelemetry(deviceId: string | null, intervalMs = 2000) {
+export function useLatestTelemetry(deviceId: string | null, intervalMs = 1000) {
   const [data, setData] = useState<TelemetryPoint | null>(null)
   const refetch = useCallback(async () => {
     if (!deviceId) return

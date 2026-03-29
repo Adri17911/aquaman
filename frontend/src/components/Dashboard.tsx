@@ -17,7 +17,6 @@ import {
   getCommandStatus,
   listSchedules,
   TelemetryPoint,
-  useLatestTelemetry,
   type ApiDevice,
 } from '../api'
 import { Scenarios } from './Scenarios'
@@ -28,9 +27,13 @@ interface DashboardProps {
   deviceId: string | null
   device: ApiDevice | null
   telemetry: TelemetryPoint | null
+  refetchTelemetry: () => void | Promise<void>
 }
 
 const ACK_TIMEOUT_MS = 5000
+/** Fast ACK polling so heater/LED controls feel immediate (MQTT + ESP32 are usually <300ms). */
+const CMD_STATUS_FIRST_POLL_MS = 40
+const CMD_STATUS_POLL_MS = 80
 const VIEW_STORAGE_KEY = 'aqua-chart-view'
 
 const METRIC_OPTS: { id: string; label: string; color: string }[] = [
@@ -55,7 +58,16 @@ function bucketForRangeHours(rangeHours: number): string | undefined {
 
 const isRoomSensor = (d: ApiDevice | null) => d?.capabilities?.room_sensor === true
 
-export function Dashboard({ deviceId, device, telemetry }: DashboardProps) {
+function inferNextHeaterOn(
+  action: 'on' | 'off' | 'toggle',
+  current: boolean | null | undefined
+): boolean {
+  if (action === 'on') return true
+  if (action === 'off') return false
+  return !(current ?? false)
+}
+
+export function Dashboard({ deviceId, device, telemetry, refetchTelemetry }: DashboardProps) {
   const roomSensor = isRoomSensor(device)
   const [chartData, setChartData] = useState<Array<Record<string, string | number | null>>>([])
   const [rangeHours, setRangeHours] = useState(24)
@@ -65,14 +77,19 @@ export function Dashboard({ deviceId, device, telemetry }: DashboardProps) {
   const [logPage, setLogPage] = useState(0)
   const logJustOpenedRef = useRef(false)
   const [pendingHeater, setPendingHeater] = useState<string | null>(null)
+  /** Optimistic heater card until ACK or timeout (telemetry lags behind relay). */
+  const [heaterOverride, setHeaterOverride] = useState<boolean | null>(null)
   const [pendingLed, setPendingLed] = useState<string | null>(null)
   const [brightnessSlider, setBrightnessSlider] = useState<number>(100)
   const [hasActiveCurveSchedule, setHasActiveCurveSchedule] = useState(false)
-  const { refetch } = useLatestTelemetry(deviceId)
-
   useEffect(() => {
     if (telemetry?.led_brightness != null) setBrightnessSlider(telemetry.led_brightness)
   }, [telemetry?.led_brightness])
+
+  useEffect(() => {
+    setHeaterOverride(null)
+    setPendingHeater(null)
+  }, [deviceId])
 
   useEffect(() => {
     if (!deviceId) {
@@ -188,17 +205,18 @@ export function Dashboard({ deviceId, device, telemetry }: DashboardProps) {
 
   useEffect(() => {
     const handler = () => {
-      refetch()
+      void refetchTelemetry()
       loadChart()
       if (logOpen) loadDataLog()
     }
     window.addEventListener(SSE_REFETCH_EVENT, handler)
     return () => window.removeEventListener(SSE_REFETCH_EVENT, handler)
-  }, [refetch, loadChart, logOpen, loadDataLog])
+  }, [refetchTelemetry, loadChart, logOpen, loadDataLog])
 
   const handleHeater = async (action: 'on' | 'off' | 'toggle') => {
     if (!deviceId) return
     setPendingHeater(action)
+    setHeaterOverride(inferNextHeaterOn(action, telemetry?.heater_on))
     try {
       const { correlation_id } = await sendHeaterCommand(deviceId, action)
       const start = Date.now()
@@ -206,18 +224,21 @@ export function Dashboard({ deviceId, device, telemetry }: DashboardProps) {
         const status = await getCommandStatus(correlation_id)
         if (status.status === 'ACKED') {
           setPendingHeater(null)
-          refetch()
+          setHeaterOverride(null)
+          void refetchTelemetry()
           return
         }
         if (Date.now() - start > ACK_TIMEOUT_MS) {
           setPendingHeater(null)
+          setHeaterOverride(null)
           return
         }
-        setTimeout(check, 500)
+        setTimeout(check, CMD_STATUS_POLL_MS)
       }
-      setTimeout(check, 500)
+      setTimeout(check, CMD_STATUS_FIRST_POLL_MS)
     } catch (e) {
       setPendingHeater(null)
+      setHeaterOverride(null)
       alert(String(e))
     }
   }
@@ -233,16 +254,16 @@ export function Dashboard({ deviceId, device, telemetry }: DashboardProps) {
         const status = await getCommandStatus(correlation_id)
         if (status.status === 'ACKED') {
           setPendingLed(null)
-          refetch()
+          void refetchTelemetry()
           return
         }
         if (Date.now() - start > ACK_TIMEOUT_MS) {
           setPendingLed(null)
           return
         }
-        setTimeout(check, 500)
+        setTimeout(check, CMD_STATUS_POLL_MS)
       }
-      setTimeout(check, 500)
+      setTimeout(check, CMD_STATUS_FIRST_POLL_MS)
     } catch (e) {
       setPendingLed(null)
       alert(String(e))
@@ -258,6 +279,8 @@ export function Dashboard({ deviceId, device, telemetry }: DashboardProps) {
   }
 
   const t = telemetry
+  const heaterDisplayOn =
+    heaterOverride !== null ? heaterOverride : (t?.heater_on ?? null)
 
   if (roomSensor) {
     const roomMetricOpts = METRIC_OPTS.filter((m) => m.id === 'temp' || m.id === 'humidity')
@@ -413,8 +436,12 @@ export function Dashboard({ deviceId, device, telemetry }: DashboardProps) {
         />
         <Card
           label="Heater"
-          value={t?.heater_on ? 'ON' : t?.heater_on === false ? 'OFF' : '-'}
-          variant={t?.heater_on ? 'on' : 'off'}
+          value={
+            heaterDisplayOn === true ? 'ON' : heaterDisplayOn === false ? 'OFF' : '-'
+          }
+          variant={
+            heaterDisplayOn === true ? 'on' : heaterDisplayOn === false ? 'off' : 'neutral'
+          }
         />
         <Card
           label="LED"
@@ -660,7 +687,7 @@ export function Dashboard({ deviceId, device, telemetry }: DashboardProps) {
         </div>
       </div>
 
-      <FilterPanel deviceId={deviceId} telemetry={t} refetchTelemetry={refetch} />
+      <FilterPanel deviceId={deviceId} telemetry={t} refetchTelemetry={() => void refetchTelemetry()} />
     </div>
   )
 }

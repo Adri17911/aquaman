@@ -21,7 +21,7 @@ function AuthenticatedApp({
   const [settingsVersion, setSettingsVersion] = useState(0)
   const { data: health } = useHealth()
   const { data: apiDevices } = useDevices()
-  const { data: telemetry } = useLatestTelemetry(deviceId)
+  const { data: telemetry, refetch: refetchTelemetry } = useLatestTelemetry(deviceId)
   useSSE()
 
   const devices = useMemo(() => {
@@ -129,7 +129,12 @@ function AuthenticatedApp({
         {view === 'compare' ? (
           <Compare devices={devices} />
         ) : (
-          <Dashboard deviceId={deviceId} device={selectedDevice} telemetry={telemetry} />
+          <Dashboard
+            deviceId={deviceId}
+            device={selectedDevice}
+            telemetry={telemetry}
+            refetchTelemetry={refetchTelemetry}
+          />
         )}
       </main>
     </div>

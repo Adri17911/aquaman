@@ -1,4 +1,6 @@
-# AQUA – Aquarium Automation Platform
+# AQUA – Aquarium Automation Platform (Backend 4.0)
+
+This tree is a **development copy** of the platform (cloned from Backend 3.0). Run and deploy from here when testing 4.0-specific changes.
 
 AQUA is a central platform for aquarium automation: **ESP32** devices publish sensor data and receive commands over **MQTT**; the **backend** ingests telemetry, stores time-series data, runs LED dawn/dusk and 24h curve schedules, and serves a **web dashboard** for monitoring and control.
 
@@ -17,6 +19,8 @@ AQUA is a central platform for aquarium automation: **ESP32** devices publish se
 ---
 
 ## Architecture
+
+A deeper overview (components, MQTT topics, data flows, modules) is in **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**.
 
 ```
 ┌─────────────┐     MQTT/MQTTs      ┌──────────────┐     REST + SSE      ┌─────────────┐
