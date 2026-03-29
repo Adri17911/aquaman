@@ -32,6 +32,7 @@ Install in Arduino IDE (Library Manager) or PlatformIO:
 - **OneWire** – OneWire bus
 - **BH1750** – light sensor (I2C)
 - **U8g2** – display (if using SH1106)
+- **NimBLE-Arduino** (h2zero) – only if the sketch implements the **filter / AQUAEL UltraMax BLE bridge** (`cmd/filter`, BLE scan, bind address).
 
 ---
 
@@ -96,6 +97,8 @@ The sketch builds these from `mqttTopicRoot` and `deviceId`:
 | `aqua/{deviceId}/cmd/led` | Backend → ESP32 | LED command |
 | `aqua/{deviceId}/ack/heater` | ESP32 → Backend | Heater ack |
 | `aqua/{deviceId}/ack/led` | ESP32 → Backend | LED ack |
+| `aqua/{deviceId}/cmd/filter` | Backend → ESP32 | Filter / BLE bridge command (optional firmware) |
+| `aqua/{deviceId}/ack/filter` | ESP32 → Backend | Filter command ack (`correlation_id` when present) |
 
 ---
 
@@ -115,6 +118,21 @@ The ESP32 publishes JSON to `aqua/{deviceId}/telemetry` with at least:
 
 Additional fields (e.g. `water_voltage`, `button_pressed`) are stored by the backend if present.
 
+### Filter bridge (Bluetooth / AQUAEL UltraMax)
+
+If your firmware talks to the pump over **BLE**, include optional fields on telemetry (JSON). The dashboard reads the latest row; `filter_scan_results` / `filter_scan_status` are also merged from the stored `raw` JSON when present.
+
+| Field | Type | Meaning |
+|-------|------|--------|
+| `filter_ble_connected` | boolean | ESP32 central connected to the pump (if known). |
+| `filter_power` | boolean | Filtration on/off (if known). |
+| `filter_mode` | string | Mode name (if known). |
+| `filter_state_blob_hex` | string | Opaque state (if any). |
+| `filter_ble_error` | string | Last error message (if any). |
+| `filter_last_address` | string | Bound peripheral MAC (e.g. after `bind_ble`). |
+| `filter_scan_status` | string | e.g. `scanning`, `done`, `error`. |
+| `filter_scan_results` | array | After a scan: `[{"address":"aa:bb:…","name":"…","rssi":-60}, …]`. |
+
 ---
 
 ## Command format
@@ -132,6 +150,13 @@ Additional fields (e.g. `water_voltage`, `button_pressed`) are stored by the bac
 - **Payload (example):** `{"action":"set_brightness","payload":{"value":50},"correlation_id":"uuid",...}`  
   Actions: `on`, `off`, `toggle`, `set_brightness` (value 0–100 or 0–255 scaled to 100).
 - ESP32 should publish an ack to `aqua/{deviceId}/ack/led` with `correlation_id` for the backend to match.
+
+### Filter (BLE bridge)
+
+- **Topic:** `aqua/{deviceId}/cmd/filter`
+- **Payload:** `{"action":"<name>","correlation_id":"<uuid>","source":"ui","ts":"..."}` and optionally `"payload": { ... }`.
+- **Actions** (typical): `ble_scan` (run BLE scan; put `filter_scan_results` / `filter_scan_status` on the next telemetry), `bind_ble` with `payload.address` set to the chosen MAC (persist in NVS), plus `connect`, `disconnect`, `on`, `off`, mode actions, `read_state` if implemented.
+- ESP32 should publish an ack to `aqua/{deviceId}/ack/filter` with `correlation_id` when the action completes (or immediately after queuing, depending on your firmware).
 
 ---
 
@@ -164,6 +189,6 @@ Change these `#define`s to match your board and wiring.
 
 - **Device not discovered:** Ensure `device_id` and `mqttTopicRoot` match the backend (default `aqua`). Check that telemetry is published and the backend is subscribed to `aqua/+/telemetry`.
 - **MQTT connect failed:** Check broker IP, port (1883 or 8883), firewall, and WiFi. For MQTTs, ensure TLS and certificate handling are correct.
-- **Commands not received:** ESP32 must subscribe to `aqua/{deviceId}/cmd/heater` and `aqua/{deviceId}/cmd/led`. Check topic strings and that the backend is publishing to the same broker.
+- **Commands not received:** ESP32 must subscribe to `aqua/{deviceId}/cmd/heater` and `aqua/{deviceId}/cmd/led`. If you use the filter bridge, also subscribe to `aqua/{deviceId}/cmd/filter`. Check topic strings and that the backend is publishing to the same broker.
 
 See also [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for backend and dashboard issues.

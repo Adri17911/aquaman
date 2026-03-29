@@ -475,6 +475,10 @@ _FILTER_ACTIONS = frozenset({
     "mode_dashed",
     "mode_sine",
     "read_state",
+    # BLE discovery (ESP32 bridge): publish scan results in telemetry as filter_scan_results
+    "ble_scan",
+    # payload: { "address": "aa:bb:cc:dd:ee:ff" } — store target; then use Connect
+    "bind_ble",
 })
 
 
@@ -485,6 +489,10 @@ def filter_command(device_id: str, body: CommandRequest):
     action = (body.action or "").strip().lower()
     if action not in _FILTER_ACTIONS:
         raise HTTPException(400, f"Unknown filter action: {body.action}")
+    if action == "bind_ble":
+        addr = (body.payload or {}).get("address")
+        if not addr or not str(addr).strip():
+            raise HTTPException(400, "bind_ble requires payload.address (Bluetooth device MAC)")
     offline = not db.device_online(device_id)
     if offline:
         logger.warning("Filter command for device %s while device offline - sending anyway", device_id)
@@ -513,6 +521,8 @@ def filter_state(device_id: str):
         "last_state_blob_hex": t.get("filter_state_blob_hex"),
         "last_ble_error": t.get("filter_ble_error"),
         "filter_last_address": t.get("filter_last_address"),
+        "filter_scan_results": t.get("filter_scan_results"),
+        "filter_scan_status": t.get("filter_scan_status"),
         "telemetry_ts": t.get("ts"),
     }
 

@@ -840,7 +840,7 @@ def _sql_bool(v: bool | None) -> int | None:
 
 def _row_to_telemetry(row: sqlite3.Row) -> dict[str, Any]:
     keys = row.keys()
-    return {
+    out: dict[str, Any] = {
         "ts": row["ts"],
         "device_id": row["device_id"],
         "temp": row["temp"],
@@ -860,6 +860,16 @@ def _row_to_telemetry(row: sqlite3.Row) -> dict[str, Any]:
         "filter_ble_error": row["filter_ble_error"] if "filter_ble_error" in keys else None,
         "filter_last_address": row["filter_last_address"] if "filter_last_address" in keys else None,
     }
+    if "raw" in keys and row["raw"]:
+        try:
+            raw_o = json.loads(row["raw"])
+            if isinstance(raw_o, dict):
+                for k in ("filter_scan_results", "filter_scan_status"):
+                    if k in raw_o:
+                        out[k] = raw_o[k]
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return out
 
 
 def _schedule_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

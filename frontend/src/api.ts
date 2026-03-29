@@ -249,11 +249,22 @@ export async function sendLedCommand(
   return r.json() as Promise<{ correlation_id: string; status: string }>
 }
 
-export async function sendFilterCommand(deviceId: string, action: string) {
+/** Rows from ESP32 filter bridge after MQTT filter action `ble_scan` (telemetry JSON). */
+export interface FilterBleScanResult {
+  address: string
+  name?: string | null
+  rssi?: number | null
+}
+
+export async function sendFilterCommand(
+  deviceId: string,
+  action: string,
+  payload?: Record<string, unknown> | null
+) {
   const r = await authFetch(`/devices/${encodeURIComponent(deviceId)}/commands/filter`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({ action, payload: payload ?? null }),
   })
   if (!r.ok) throw new Error(await r.text())
   return r.json() as Promise<{ correlation_id: string; status: string }>
@@ -270,6 +281,8 @@ export async function getFilterState(deviceId: string) {
     last_state_blob_hex: string | null
     last_ble_error: string | null
     filter_last_address: string | null
+    filter_scan_results?: FilterBleScanResult[] | null
+    filter_scan_status?: string | null
     telemetry_ts: string | null
   }>(`/devices/${encodeURIComponent(deviceId)}/filter/state`)
 }
@@ -417,6 +430,8 @@ export interface TelemetryPoint {
   filter_state_blob_hex?: string | null
   filter_ble_error?: string | null
   filter_last_address?: string | null
+  filter_scan_results?: FilterBleScanResult[] | null
+  filter_scan_status?: string | null
 }
 
 // React hooks with simple polling + SSE invalidation

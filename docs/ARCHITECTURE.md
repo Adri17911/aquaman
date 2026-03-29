@@ -77,6 +77,7 @@ Default topic root: **`aqua`** (configurable via `settings.json` / `MqttSettings
 | Cloud → device | `{root}/{device_id}/cmd/filter` | Optional filter commands (if backend/feature enabled). |
 | Device → cloud | `{root}/{device_id}/ack/heater` | Ack with state + `correlation_id` when applicable. |
 | Device → cloud | `{root}/{device_id}/ack/led` | Same for LED. |
+| Device → cloud | `{root}/{device_id}/ack/filter` | Filter bridge ack (e.g. after `ble_scan`, `bind_ble`, or pump actions). |
 
 The **backend** MQTT client (separate from devices) subscribes to:
 
