@@ -123,7 +123,6 @@ static bool g_nimbleInited = false;
 static char g_filterScanStatus[16] = "";
 static char g_filterBleError[140] = "";
 static char g_filterBoundAddr[24] = "";
-static char g_pendingFilterAckCorr[48] = "";
 static volatile bool g_pendingBleScan = false;
 
 static void strCopy(char* dst, size_t cap, const char* src) {
@@ -884,10 +883,7 @@ void loop() {
 #if ENABLE_FILTER_BRIDGE
   if (g_pendingBleScan && mqttClient.connected()) {
     g_pendingBleScan = false;
-    char corr[sizeof(g_pendingFilterAckCorr)];
-    strCopy(corr, sizeof(corr), g_pendingFilterAckCorr);
     runDeferredBleScan();
-    publishAckFilter(corr);
     publishTelemetry();
   }
 #endif

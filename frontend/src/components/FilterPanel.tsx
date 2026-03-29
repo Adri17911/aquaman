@@ -79,6 +79,12 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
         const msg = explainAckFailure(res)
         setLastUiError(msg)
         toast(msg, 'error')
+      } else if (action === 'connect' || action === 'disconnect') {
+        toast(
+          'MQTT acknowledgment received. This firmware still uses a stub for pump GATT — see the Error line above for details.',
+          'info',
+          6500
+        )
       }
       refetchTelemetry()
     } catch (e) {
@@ -210,7 +216,8 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
 
   const scanBusy = pending === 'ble_scan'
   const bindBusy = pending === 'bind_ble'
-  const otherFilterBusy = pending !== null && !scanBusy && !bindBusy
+  /** Block every filter control while any async filter op is in flight (avoids races and “dead” clicks). */
+  const anyFilterPending = pending !== null
 
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
@@ -228,8 +235,9 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
           <button
             type="button"
-            disabled={scanBusy || bindBusy}
+            disabled={anyFilterPending}
             onClick={() => void handleBleScan()}
+            title={anyFilterPending && !scanBusy ? 'Wait for the current action to finish' : undefined}
             className="rounded-lg bg-indigo-700 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
           >
             {pending === 'ble_scan' ? 'Scanning…' : 'Scan for Bluetooth devices'}
@@ -238,7 +246,7 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
             className="min-w-[12rem] rounded-lg border border-slate-600 bg-slate-900 px-2 py-2 text-sm text-slate-200 disabled:opacity-50"
             value={selectedAddress}
             onChange={(e) => setSelectedAddress(e.target.value)}
-            disabled={scanBusy || displayList.length === 0}
+            disabled={anyFilterPending || displayList.length === 0}
           >
             <option value="">Select device…</option>
             {displayList.map((row) => {
@@ -255,7 +263,7 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
           </select>
           <button
             type="button"
-            disabled={bindBusy || scanBusy || !selectedAddress.trim()}
+            disabled={anyFilterPending || !selectedAddress.trim()}
             onClick={handleBindBle}
             className="rounded-lg bg-slate-600 px-3 py-2 text-sm font-medium text-slate-100 hover:bg-slate-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -341,32 +349,33 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
-          disabled={otherFilterBusy || scanBusy}
-          onClick={() => runAction('connect', ACK_CONNECT_MS)}
+          disabled={anyFilterPending}
+          onClick={() => void runAction('connect', ACK_CONNECT_MS)}
+          title={anyFilterPending && pending !== 'connect' ? 'Another filter action is running' : undefined}
           className="rounded-lg bg-cyan-700 px-3 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:opacity-50"
         >
           {pending === 'connect' ? '…' : 'Connect'}
         </button>
         <button
           type="button"
-          disabled={otherFilterBusy || scanBusy}
-          onClick={() => runAction('disconnect', ACK_SHORT_MS)}
+          disabled={anyFilterPending}
+          onClick={() => void runAction('disconnect', ACK_SHORT_MS)}
           className="rounded-lg bg-slate-600 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-500 disabled:opacity-50"
         >
           {pending === 'disconnect' ? '…' : 'Disconnect'}
         </button>
         <button
           type="button"
-          disabled={otherFilterBusy || scanBusy || !bleOk}
-          onClick={() => runAction('on', ACK_SHORT_MS)}
+          disabled={anyFilterPending || !bleOk}
+          onClick={() => void runAction('on', ACK_SHORT_MS)}
           className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {pending === 'on' ? '…' : 'Filtration on'}
         </button>
         <button
           type="button"
-          disabled={otherFilterBusy || scanBusy || !bleOk}
-          onClick={() => runAction('off', ACK_SHORT_MS)}
+          disabled={anyFilterPending || !bleOk}
+          onClick={() => void runAction('off', ACK_SHORT_MS)}
           className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {pending === 'off' ? '…' : 'Filtration off'}
@@ -385,8 +394,8 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
           <button
             key={action}
             type="button"
-            disabled={otherFilterBusy || scanBusy || !bleOk}
-            onClick={() => runAction(action, ACK_SHORT_MS)}
+            disabled={anyFilterPending || !bleOk}
+            onClick={() => void runAction(action, ACK_SHORT_MS)}
             className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {pending === action ? '…' : label}
@@ -394,8 +403,8 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
         ))}
         <button
           type="button"
-          disabled={otherFilterBusy || scanBusy || !bleOk}
-          onClick={() => runAction('read_state', ACK_SHORT_MS)}
+          disabled={anyFilterPending || !bleOk}
+          onClick={() => void runAction('read_state', ACK_SHORT_MS)}
           className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {pending === 'read_state' ? '…' : 'Read state'}
