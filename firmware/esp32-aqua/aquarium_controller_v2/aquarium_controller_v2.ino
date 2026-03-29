@@ -244,18 +244,29 @@ static void publishAckFilter(const char* correlationId) {
 }
 
 // PubSubClient: publishing from mqttCallback often fails; defer ack to loop().
-static volatile bool g_deferredFilterAckPending = false;
-static char g_deferredFilterAckCorr[48];
+// Several filter cmds can be processed in one mqttClient.loop() pass; queue acks so none overwrite each other.
+static const uint8_t kDeferredFilterAckCap = 16;
+static char g_deferredFilterAckQ[kDeferredFilterAckCap][48];
+static uint8_t g_deferredAckHead = 0;
+static uint8_t g_deferredAckCount = 0;
 
 static void requestDeferredFilterAck(const char* correlationId) {
-  strCopy(g_deferredFilterAckCorr, sizeof(g_deferredFilterAckCorr), correlationId ? correlationId : "");
-  g_deferredFilterAckPending = true;
+  if (g_deferredAckCount >= kDeferredFilterAckCap) {
+    g_deferredAckHead = (g_deferredAckHead + 1) % kDeferredFilterAckCap;
+    g_deferredAckCount--;
+    Serial.println("MQTT: deferred filter ack queue overflow; dropped oldest");
+  }
+  uint8_t slot = (g_deferredAckHead + g_deferredAckCount) % kDeferredFilterAckCap;
+  strCopy(g_deferredFilterAckQ[slot], sizeof(g_deferredFilterAckQ[slot]), correlationId ? correlationId : "");
+  g_deferredAckCount++;
 }
 
 static void flushDeferredFilterAck() {
-  if (!g_deferredFilterAckPending || !mqttClient.connected()) return;
-  g_deferredFilterAckPending = false;
-  publishAckFilter(g_deferredFilterAckCorr);
+  while (g_deferredAckCount > 0 && mqttClient.connected()) {
+    publishAckFilter(g_deferredFilterAckQ[g_deferredAckHead]);
+    g_deferredAckHead = (g_deferredAckHead + 1) % kDeferredFilterAckCap;
+    g_deferredAckCount--;
+  }
 }
 
 static void handleFilterCommand(JsonDocument& doc) {
