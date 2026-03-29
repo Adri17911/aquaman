@@ -28,7 +28,8 @@ class MqttSettings(BaseModel):
     keepalive_seconds: int = Field(default=60, ge=10, le=600)
     telemetry_qos: int = Field(default=1, ge=0, le=2)
     command_qos: int = Field(default=1, ge=0, le=2)
-    command_timeout_seconds: int = Field(default=5, ge=1, le=60)
+    # BLE scan on ESP32 can take ~5s before ack; allow headroom for MQTT latency.
+    command_timeout_seconds: int = Field(default=25, ge=1, le=120)
     # MQTT over TLS (MQTTs) for internet-facing devices
     use_tls: bool = False
     ca_certs: str | None = None  # Path to CA certificate file (optional; system CA used if unset)
@@ -105,6 +106,13 @@ def load_config() -> AppConfig:
                 v = int(os.environ["AQUA_RETAIN_DAYS"])
                 if 0 <= v <= 3650:
                     _cached_config.logging.retain_days = v
+            except ValueError:
+                pass
+        if os.environ.get("AQUA_COMMAND_TIMEOUT_SECONDS"):
+            try:
+                v = int(os.environ["AQUA_COMMAND_TIMEOUT_SECONDS"])
+                if 1 <= v <= 120:
+                    _cached_config.mqtt.command_timeout_seconds = v
             except ValueError:
                 pass
         return _cached_config

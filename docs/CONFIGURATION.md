@@ -29,7 +29,7 @@ The backend creates `settings.json` on first run in the application directory (o
     "keepalive_seconds": 60,
     "telemetry_qos": 1,
     "command_qos": 1,
-    "command_timeout_seconds": 5,
+    "command_timeout_seconds": 25,
     "use_tls": false,
     "ca_certs": null,
     "tls_insecure": false,
@@ -57,7 +57,7 @@ The backend creates `settings.json` on first run in the application directory (o
 | keepalive_seconds | number | 60 | MQTT keepalive (10–600) |
 | telemetry_qos | number | 1 | QoS for telemetry subscription (0–2) |
 | command_qos | number | 1 | QoS for command publish (0–2) |
-| command_timeout_seconds | number | 5 | Seconds before marking command TIMEOUT (1–60) |
+| command_timeout_seconds | number | 25 | Seconds before marking command TIMEOUT (1–120); use ≥20 if ESP32 runs `ble_scan` (~5s) |
 | use_tls | boolean | false | Use TLS when connecting to broker |
 | ca_certs | string \| null | null | Path to CA certificate file (optional) |
 | tls_insecure | boolean | false | Skip server hostname verification (e.g. self-signed) |
@@ -94,6 +94,7 @@ These override settings from `settings.json` and are **not** written back. Usefu
 | AQUA_MQTT_TLS_INSECURE | Set to `1`, `true`, or `yes` to skip hostname verification |
 | AQUA_MQTT_PUBLIC_BROKER_HOST | Public hostname for devices (e.g. domain) |
 | AQUA_MQTT_PUBLIC_BROKER_PORT | Public port for devices (e.g. 8883) |
+| AQUA_COMMAND_TIMEOUT_SECONDS | Override command ack timeout (1–120), e.g. `30` for slow BLE scans |
 
 ### Example (Docker Compose)
 

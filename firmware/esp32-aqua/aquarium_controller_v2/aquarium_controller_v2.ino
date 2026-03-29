@@ -244,6 +244,21 @@ static void publishAckFilter(const char* correlationId) {
   mqttClient.publish(topicAckFilter.c_str(), payload, false);
 }
 
+// PubSubClient: publishing from mqttCallback often fails; defer ack to loop().
+static volatile bool g_deferredFilterAckPending = false;
+static char g_deferredFilterAckCorr[48];
+
+static void requestDeferredFilterAck(const char* correlationId) {
+  strCopy(g_deferredFilterAckCorr, sizeof(g_deferredFilterAckCorr), correlationId ? correlationId : "");
+  g_deferredFilterAckPending = true;
+}
+
+static void flushDeferredFilterAck() {
+  if (!g_deferredFilterAckPending || !mqttClient.connected()) return;
+  g_deferredFilterAckPending = false;
+  publishAckFilter(g_deferredFilterAckCorr);
+}
+
 static void handleFilterCommand(JsonDocument& doc) {
   const char* action = doc["action"] | "";
   const char* correlationId = doc["correlation_id"] | "";
@@ -268,7 +283,7 @@ static void handleFilterCommand(JsonDocument& doc) {
       saveFilterBoundAddress(addr);
       g_filterBleError[0] = 0;
     }
-    publishAckFilter(correlationId);
+    requestDeferredFilterAck(correlationId);
     return;
   }
 
@@ -282,12 +297,12 @@ static void handleFilterCommand(JsonDocument& doc) {
       strcmp(action, "mode_constant") == 0 || strcmp(action, "mode_pulse") == 0 ||
       strcmp(action, "mode_dashed") == 0 || strcmp(action, "mode_sine") == 0 ||
       strcmp(action, "read_state") == 0) {
-    publishAckFilter(correlationId);
+    requestDeferredFilterAck(correlationId);
     return;
   }
 
   strCopy(g_filterBleError, sizeof(g_filterBleError), "Unknown filter action");
-  publishAckFilter(correlationId);
+  requestDeferredFilterAck(correlationId);
 }
 #endif  // ENABLE_FILTER_BRIDGE
 
@@ -859,6 +874,9 @@ void loop() {
 
   if (mqttClient.connected()) {
     mqttClient.loop();
+#if ENABLE_FILTER_BRIDGE
+    flushDeferredFilterAck();
+#endif
   } else {
     mqttConnected = false;
   }
