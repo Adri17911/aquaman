@@ -1,0 +1,4 @@
+﻿# Arduino build dirs
+build/
+.pio/
+
