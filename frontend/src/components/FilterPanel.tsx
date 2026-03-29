@@ -79,12 +79,6 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
         const msg = explainAckFailure(res)
         setLastUiError(msg)
         toast(msg, 'error')
-      } else if (action === 'connect' || action === 'disconnect') {
-        toast(
-          'MQTT acknowledgment received. This firmware still uses a stub for pump GATT — see the Error line above for details.',
-          'info',
-          6500
-        )
       }
       refetchTelemetry()
     } catch (e) {

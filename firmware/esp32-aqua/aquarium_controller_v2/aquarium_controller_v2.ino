@@ -15,6 +15,10 @@
 #include <NimBLEDevice.h>
 #include <Preferences.h>
 #include <string>
+#include <vector>
+#include <cstdio>
+#include <cstring>
+#include <cctype>
 #endif
 
 // ============================================================
@@ -124,6 +128,18 @@ static char g_filterScanStatus[16] = "";
 static char g_filterBleError[140] = "";
 static char g_filterBoundAddr[24] = "";
 static volatile bool g_pendingBleScan = false;
+static volatile bool g_pendingFilterGatt = false;
+static char g_filterGattAction[32] = "";
+static char g_filterGattCorr[48] = "";
+static bool g_filterBleConnected = false;
+static bool g_filterPowerKnown = false;
+static bool g_filterPowerOn = false;
+static char g_filterMode[24] = "";
+static char g_filterStateBlobHex[256] = "";
+static NimBLEClient* g_filterClient = nullptr;
+static const NimBLEUUID kFilterUuidPower("19b10001-98b5-11ed-a8fc-0242ac120002");
+static const NimBLEUUID kFilterUuidMode("19b10002-98b5-11ed-a8fc-0242ac120002");
+static const NimBLEUUID kFilterUuidState("19b100ee-98b5-11ed-a8fc-0242ac120002");
 
 static void strCopy(char* dst, size_t cap, const char* src) {
   if (!dst || cap == 0) return;
@@ -269,13 +285,202 @@ static void flushDeferredFilterAck() {
   }
 }
 
+static void filterBytesToHex(const uint8_t* data, size_t len, char* out, size_t outCap) {
+  out[0] = 0;
+  if (!data || len == 0 || outCap < 3) return;
+  size_t maxBytes = (outCap - 1) / 2;
+  if (len > maxBytes) len = maxBytes;
+  for (size_t i = 0; i < len; i++) {
+    snprintf(out + i * 2, 3, "%02x", data[i]);
+  }
+}
+
+static bool filterAddrMatchesPeer(NimBLEClient* cl) {
+  if (!cl || !cl->isConnected() || !g_filterBoundAddr[0]) return false;
+  std::string want(g_filterBoundAddr);
+  std::string have = cl->getPeerAddress().toString();
+  for (auto& c : want) c = (char)tolower((unsigned char)c);
+  for (auto& c : have) c = (char)tolower((unsigned char)c);
+  return want == have;
+}
+
+static NimBLERemoteCharacteristic* filterFindCharacteristic(NimBLEClient* client, const NimBLEUUID& uuid) {
+  const auto& svcs = client->getServices(true);
+  for (NimBLERemoteService* svc : svcs) {
+    if (!svc) continue;
+    NimBLERemoteCharacteristic* ch = svc->getCharacteristic(uuid);
+    if (ch != nullptr) return ch;
+  }
+  return nullptr;
+}
+
+static NimBLEClient* filterGetOrCreateClient() {
+  ensureNimble();
+  if (!g_filterClient) {
+    g_filterClient = NimBLEDevice::createClient();
+  }
+  return g_filterClient;
+}
+
+static void filterStopScanIfNeeded() {
+  ensureNimble();
+  NimBLEScan* scan = NimBLEDevice::getScan();
+  if (scan && scan->isScanning()) {
+    scan->stop();
+  }
+}
+
+static bool filterGattConnect() {
+  filterStopScanIfNeeded();
+  NimBLEClient* cl = filterGetOrCreateClient();
+  if (cl->isConnected() && filterAddrMatchesPeer(cl)) {
+    g_filterBleConnected = true;
+    g_filterBleError[0] = 0;
+    return true;
+  }
+  if (cl->isConnected()) {
+    cl->disconnect();
+  }
+  NimBLEAddress addrPub(g_filterBoundAddr, BLE_ADDR_PUBLIC);
+  if (!cl->connect(addrPub)) {
+    NimBLEAddress addrRand(g_filterBoundAddr, BLE_ADDR_RANDOM);
+    if (!cl->connect(addrRand)) {
+      strCopy(g_filterBleError, sizeof(g_filterBleError), "BLE connect failed");
+      g_filterBleConnected = false;
+      return false;
+    }
+  }
+  g_filterBleConnected = true;
+  g_filterBleError[0] = 0;
+  return true;
+}
+
+static void filterGattDisconnect() {
+  if (g_filterClient && g_filterClient->isConnected()) {
+    g_filterClient->disconnect();
+  }
+  g_filterBleConnected = false;
+}
+
+static bool filterGattEnsureConnected() {
+  if (g_filterClient && g_filterClient->isConnected() && filterAddrMatchesPeer(g_filterClient)) {
+    g_filterBleConnected = true;
+    return true;
+  }
+  return filterGattConnect();
+}
+
+static bool filterGattWritePower(bool on) {
+  NimBLEClient* cl = filterGetOrCreateClient();
+  if (!filterGattEnsureConnected()) return false;
+  NimBLERemoteCharacteristic* ch = filterFindCharacteristic(cl, kFilterUuidPower);
+  if (!ch) {
+    strCopy(g_filterBleError, sizeof(g_filterBleError), "Power characteristic not found");
+    return false;
+  }
+  uint8_t v = on ? 1 : 0;
+  if (!ch->writeValue(&v, 1, true)) {
+    strCopy(g_filterBleError, sizeof(g_filterBleError), "Power write failed");
+    return false;
+  }
+  g_filterPowerOn = on;
+  g_filterPowerKnown = true;
+  g_filterBleError[0] = 0;
+  return true;
+}
+
+static bool filterGattWriteMode(uint8_t modeByte, const char* modeName) {
+  NimBLEClient* cl = filterGetOrCreateClient();
+  if (!filterGattEnsureConnected()) return false;
+  NimBLERemoteCharacteristic* ch = filterFindCharacteristic(cl, kFilterUuidMode);
+  if (!ch) {
+    strCopy(g_filterBleError, sizeof(g_filterBleError), "Mode characteristic not found");
+    return false;
+  }
+  uint8_t mode[4] = {modeByte, 0, 0, 0};
+  if (!ch->writeValue(mode, sizeof(mode), true)) {
+    strCopy(g_filterBleError, sizeof(g_filterBleError), "Mode write failed");
+    return false;
+  }
+  strCopy(g_filterMode, sizeof(g_filterMode), modeName);
+  g_filterBleError[0] = 0;
+  return true;
+}
+
+static bool filterGattReadState() {
+  NimBLEClient* cl = filterGetOrCreateClient();
+  if (!filterGattEnsureConnected()) return false;
+  NimBLERemoteCharacteristic* ch = filterFindCharacteristic(cl, kFilterUuidState);
+  if (!ch) {
+    strCopy(g_filterBleError, sizeof(g_filterBleError), "State characteristic not found");
+    return false;
+  }
+  NimBLEAttValue val = ch->readValue();
+  uint16_t len = val.size();
+  const uint8_t* p = val.data();
+  if (len == 0 || p == nullptr) {
+    strCopy(g_filterBleError, sizeof(g_filterBleError), "State read empty");
+    return false;
+  }
+  filterBytesToHex(p, len, g_filterStateBlobHex, sizeof(g_filterStateBlobHex));
+  g_filterBleError[0] = 0;
+  return true;
+}
+
+static void executePendingFilterGatt() {
+  char action[32];
+  char corr[48];
+  strCopy(action, sizeof(action), g_filterGattAction);
+  strCopy(corr, sizeof(corr), g_filterGattCorr);
+
+  bool ok = true;
+  if (!g_filterBoundAddr[0]) {
+    strCopy(g_filterBleError, sizeof(g_filterBleError), "No bound filter address; use Bind first");
+    ok = false;
+  } else {
+    ensureNimble();
+    filterStopScanIfNeeded();
+
+    if (strcmp(action, "connect") == 0) {
+      ok = filterGattConnect();
+    } else if (strcmp(action, "disconnect") == 0) {
+      filterGattDisconnect();
+      g_filterBleError[0] = 0;
+      ok = true;
+    } else if (strcmp(action, "on") == 0) {
+      ok = filterGattWritePower(true);
+    } else if (strcmp(action, "off") == 0) {
+      ok = filterGattWritePower(false);
+    } else if (strcmp(action, "mode_constant") == 0) {
+      ok = filterGattWriteMode(0, "constant");
+    } else if (strcmp(action, "mode_pulse") == 0) {
+      ok = filterGattWriteMode(1, "pulse");
+    } else if (strcmp(action, "mode_dashed") == 0) {
+      ok = filterGattWriteMode(2, "dashed");
+    } else if (strcmp(action, "mode_sine") == 0) {
+      ok = filterGattWriteMode(3, "sine");
+    } else if (strcmp(action, "read_state") == 0) {
+      ok = filterGattReadState();
+    } else {
+      strCopy(g_filterBleError, sizeof(g_filterBleError), "Unknown filter GATT action");
+      ok = false;
+    }
+  }
+
+  if (!ok && !g_filterBleError[0]) {
+    strCopy(g_filterBleError, sizeof(g_filterBleError), "Filter command failed");
+  }
+  requestDeferredFilterAck(corr);
+}
+
 static void handleFilterCommand(JsonDocument& doc) {
   const char* action = doc["action"] | "";
   const char* correlationId = doc["correlation_id"] | "";
 
   if (strcmp(action, "ble_scan") == 0) {
-    strCopy(g_pendingFilterAckCorr, sizeof(g_pendingFilterAckCorr), correlationId);
+    // Ack immediately so the backend does not TIMEOUT while BLE scan runs (~5–12s).
     g_pendingBleScan = true;
+    requestDeferredFilterAck(correlationId);
     return;
   }
 
@@ -297,17 +502,14 @@ static void handleFilterCommand(JsonDocument& doc) {
     return;
   }
 
-  strCopy(
-      g_filterBleError,
-      sizeof(g_filterBleError),
-      "Pump GATT (connect/on/off/modes) not in this firmware; use Scan/Bind, then extend sketch or vendor app.");
-
   if (strcmp(action, "connect") == 0 || strcmp(action, "disconnect") == 0 ||
       strcmp(action, "on") == 0 || strcmp(action, "off") == 0 ||
       strcmp(action, "mode_constant") == 0 || strcmp(action, "mode_pulse") == 0 ||
       strcmp(action, "mode_dashed") == 0 || strcmp(action, "mode_sine") == 0 ||
       strcmp(action, "read_state") == 0) {
-    requestDeferredFilterAck(correlationId);
+    strCopy(g_filterGattAction, sizeof(g_filterGattAction), action);
+    strCopy(g_filterGattCorr, sizeof(g_filterGattCorr), correlationId);
+    g_pendingFilterGatt = true;
     return;
   }
 
@@ -442,7 +644,16 @@ void publishTelemetry() {
   if (g_filterBoundAddr[0]) {
     doc["filter_last_address"] = g_filterBoundAddr;
   }
-  doc["filter_ble_connected"] = false;
+  doc["filter_ble_connected"] = g_filterBleConnected;
+  if (g_filterPowerKnown) {
+    doc["filter_power"] = g_filterPowerOn;
+  }
+  if (g_filterMode[0]) {
+    doc["filter_mode"] = g_filterMode;
+  }
+  if (g_filterStateBlobHex[0]) {
+    doc["filter_state_blob_hex"] = g_filterStateBlobHex;
+  }
   if (g_filterBleError[0]) {
     doc["filter_ble_error"] = g_filterBleError;
   }
@@ -471,7 +682,9 @@ void publishTelemetry() {
   if (n >= sizeof(payload) - 1) {
     Serial.println("telemetry JSON truncated; increase payload buffer");
   }
-  mqttClient.publish(topicTelemetry.c_str(), payload, false);
+  if (!mqttClient.publish(topicTelemetry.c_str(), payload, false)) {
+    Serial.println("MQTT: telemetry publish failed (payload vs buffer size, or not connected)");
+  }
 }
 
 void publishAck(const char* component, const char* correlationId) {
@@ -848,7 +1061,12 @@ void setupInputs() {
 void setupMqtt() {
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
+#if ENABLE_FILTER_BRIDGE
+  // Telemetry doc + filter_scan_results can exceed 1KB; PubSubClient silently fails publish if payload > buffer.
+  mqttClient.setBufferSize(5120);
+#else
   mqttClient.setBufferSize(1024);
+#endif
   mqttClient.setKeepAlive(60);
   mqttClient.setSocketTimeout(15);
 }
@@ -885,7 +1103,16 @@ void loop() {
   if (mqttClient.connected()) {
     mqttClient.loop();
 #if ENABLE_FILTER_BRIDGE
+    bool didFilterGatt = false;
+    if (g_pendingFilterGatt) {
+      g_pendingFilterGatt = false;
+      executePendingFilterGatt();
+      didFilterGatt = true;
+    }
     flushDeferredFilterAck();
+    if (didFilterGatt) {
+      publishTelemetry();
+    }
 #endif
   } else {
     mqttConnected = false;
