@@ -7,44 +7,42 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
+// UltraMax / BLE bridge: set 0 to build without NimBLE-Arduino (Library Manager: "NimBLE-Arduino" by h2zero).
+#ifndef ENABLE_FILTER_BRIDGE
+#define ENABLE_FILTER_BRIDGE 1
+#endif
+#if ENABLE_FILTER_BRIDGE
+#include <NimBLEDevice.h>
+#include <Preferences.h>
+#include <string>
+#endif
+
 // ============================================================
-// AQUA ESP32 Controller v2
-// - Non-blocking DS18B20 reads (MQTT/display stay responsive)
-// - Separate WiFi + MQTT status on OLED
-// - LEDC via ledcAttach (Arduino-ESP32 3.x API)
-// - MQTT keepAlive / socket timeout; WiFi reconnect delay
-// - Placeholders for WiFi/MQTT — set before deploy
+// AQUA ESP32 Controller (guide-aligned version)
+// - MQTT/WiFi: same pattern as esp32_room_sensor (no WiFi.disconnect
+//   on reconnect, short client id, setServer before each connect).
+// - LEDC: ledcAttach + ledcWrite(pin) for Arduino-ESP32 3.x
 // ============================================================
 
 // =========================
 // User configuration
 // =========================
-// MQTT: ESP32 must reach the *same* broker the AQUA backend uses (settings.json).
-// Use that machine's LAN IP (e.g. 192.168.0.250). Do NOT use 127.0.0.1 on the ESP32.
-// If the broker requires auth, set MQTT_USER / MQTT_PASSWORD to match the backend.
 static const char* WIFI_SSID = "VinylScootering";
 static const char* WIFI_PASSWORD = "Adrian*96";
 
-static const char* MQTT_HOST = "192.168.0.250";
+static const char* MQTT_HOST = "172.16.0.2";
 static const uint16_t MQTT_PORT = 1883;
 static const char* MQTT_USER = "";
 static const char* MQTT_PASSWORD = "";
 static const char* MQTT_TOPIC_ROOT = "aqua";
-// Must match the device id in the AQUA app dropdown (and default_device_id in settings.json).
 static const char* DEVICE_ID = "esp32-01";
 
 // Publish timing
-static const unsigned long TELEMETRY_INTERVAL_MS = 2000;
+static const unsigned long TELEMETRY_INTERVAL_MS = 1000;
 static const unsigned long STATUS_INTERVAL_MS = 30000;
 static const unsigned long DISPLAY_ROTATE_MS = 4000;
-// Match working esp32_room_sensor.ino (5s backoff; long backoffs delay recovery after WiFi blips).
 static const unsigned long WIFI_RETRY_MS = 5000;
 static const unsigned long MQTT_RETRY_MS = 5000;
-
-// DS18B20: conversion is async; read at most this often (ms between completed reads)
-static const unsigned long DS18B20_READ_INTERVAL_MS = 2000;
-// Wait after requestTemperatures() before getTempCByIndex (12-bit resolution ~750ms)
-static const unsigned long DS18B20_CONVERSION_WAIT_MS = 800;
 
 // Feature toggles
 static const bool ENABLE_BH1750 = true;
@@ -52,27 +50,28 @@ static const bool ENABLE_DS18B20 = true;
 static const bool ENABLE_OLED = true;
 static const bool ENABLE_WATER_SENSOR = true;
 static const bool ENABLE_BUTTON_INPUT = true;
-static const bool OLED_SINGLE_SCREEN_MODE = true;
-static const bool MQTT_ALLOW_INSECURE_BRIGHTNESS_255 = true;
+static const bool OLED_SINGLE_SCREEN_MODE = true;   // true = one screen with icon, false = alternate screens
+static const bool MQTT_ALLOW_INSECURE_BRIGHTNESS_255 = true; // accept 0-255 and scale to 0-100
 
 // =========================
 // Pin summary (guide defaults)
-// GPIO 34/35: input-only; no internal pull-up on ESP32 — use external bias if needed.
 // =========================
-static const int LED_PIN = 32;
-static const int SDA_PIN = 21;
-static const int SCL_PIN = 22;
-static const int TEMP_PIN = 5;
-static const int WATER_LEVEL_PIN = 34;
-static const int RELAY_PIN = 18;
-static const int BUTTON_PIN = 35;
+static const int LED_PIN = 32;            // PWM LED output
+static const int SDA_PIN = 21;            // I2C SDA
+static const int SCL_PIN = 22;            // I2C SCL
+static const int TEMP_PIN = 5;            // DS18B20 OneWire data
+static const int WATER_LEVEL_PIN = 34;    // Analog water level
+static const int RELAY_PIN = 18;          // Heater relay
+static const int BUTTON_PIN = 35;         // Optional analog button
 
 static const int PWM_FREQ = 5000;
-static const int PWM_RESOLUTION = 8;
+static const int PWM_RESOLUTION = 8;      // 0-255 hardware PWM
 
+// Sensor thresholds
 static const int WATER_PRESENT_THRESHOLD = 1800;
 static const int BUTTON_PRESSED_THRESHOLD = 1200;
 
+// U8g2 SH1106 128x64 I2C constructor
 U8G2_SH1106_128X64_NONAME_F_HW_I2C display(U8G2_R0, U8X8_PIN_NONE);
 
 WiFiClient wifiClient;
@@ -87,10 +86,12 @@ String topicCmdHeater;
 String topicCmdLed;
 String topicAckHeater;
 String topicAckLed;
+String topicCmdFilter;
+String topicAckFilter;
 
 bool heaterState = false;
 bool ledState = false;
-uint8_t ledBrightness = 0;
+uint8_t ledBrightness = 0;     // logical percentage 0-100
 bool mqttConnected = false;
 bool wifiConnected = false;
 
@@ -106,13 +107,189 @@ unsigned long lastStatusMs = 0;
 unsigned long lastDisplayRotateMs = 0;
 unsigned long lastWifiRetryMs = 0;
 unsigned long lastMqttRetryMs = 0;
-unsigned long lastMqttDiagMs = 0;
 uint8_t displayPage = 0;
 
-// DS18B20 non-blocking state
-bool ds18b20ConversionPending = false;
-unsigned long ds18b20RequestAtMs = 0;
-unsigned long ds18b20LastCompletedMs = 0;
+#if ENABLE_FILTER_BRIDGE
+static constexpr size_t kBleScanCap = 32;
+struct BleScanRow {
+  char addr[24];
+  char name[40];
+  int rssi;
+};
+static BleScanRow g_bleScanRows[kBleScanCap];
+static size_t g_bleScanCount = 0;
+static volatile bool g_bleScanEnded = false;
+static bool g_nimbleInited = false;
+static char g_filterScanStatus[16] = "";
+static char g_filterBleError[140] = "";
+static char g_filterBoundAddr[24] = "";
+static char g_pendingFilterAckCorr[48] = "";
+static volatile bool g_pendingBleScan = false;
+
+static void strCopy(char* dst, size_t cap, const char* src) {
+  if (!dst || cap == 0) return;
+  if (!src) src = "";
+  size_t n = strlen(src);
+  if (n >= cap) n = cap - 1;
+  memcpy(dst, src, n);
+  dst[n] = 0;
+}
+
+static void loadFilterBoundAddress() {
+  Preferences prefs;
+  if (prefs.begin("aqua", true)) {
+    String s = prefs.getString("flt_addr", "");
+    strCopy(g_filterBoundAddr, sizeof(g_filterBoundAddr), s.c_str());
+    prefs.end();
+  }
+}
+
+static void saveFilterBoundAddress(const char* mac) {
+  Preferences prefs;
+  if (prefs.begin("aqua", false)) {
+    prefs.putString("flt_addr", mac ? mac : "");
+    prefs.end();
+  }
+  strCopy(g_filterBoundAddr, sizeof(g_filterBoundAddr), mac);
+}
+
+class AquaBleScanCallbacks : public NimBLEScanCallbacks {
+  void onResult(const NimBLEAdvertisedDevice* adv) override {
+    if (!adv || g_bleScanCount >= kBleScanCap) return;
+    std::string mac = adv->getAddress().toString();
+    const char* macc = mac.c_str();
+    for (size_t i = 0; i < g_bleScanCount; i++) {
+      if (strcmp(g_bleScanRows[i].addr, macc) == 0) {
+        if (adv->getRSSI() > g_bleScanRows[i].rssi) {
+          g_bleScanRows[i].rssi = adv->getRSSI();
+        }
+        return;
+      }
+    }
+    BleScanRow& row = g_bleScanRows[g_bleScanCount++];
+    strCopy(row.addr, sizeof(row.addr), macc);
+    if (adv->haveName()) {
+      strCopy(row.name, sizeof(row.name), adv->getName().c_str());
+    } else {
+      row.name[0] = 0;
+    }
+    row.rssi = adv->getRSSI();
+  }
+
+  void onScanEnd(const NimBLEScanResults& results, int reason) override {
+    (void)results;
+    (void)reason;
+    strCopy(g_filterScanStatus, sizeof(g_filterScanStatus), "done");
+    g_bleScanEnded = true;
+  }
+};
+
+static AquaBleScanCallbacks g_aquaScanCb;
+
+static void ensureNimble() {
+  if (g_nimbleInited) return;
+  NimBLEDevice::init("aqua-ctrl");
+  g_nimbleInited = true;
+}
+
+static void runDeferredBleScan() {
+  g_filterBleError[0] = 0;
+  g_bleScanCount = 0;
+  g_bleScanEnded = false;
+  strCopy(g_filterScanStatus, sizeof(g_filterScanStatus), "scanning");
+
+  ensureNimble();
+  NimBLEScan* scan = NimBLEDevice::getScan();
+  scan->setScanCallbacks(&g_aquaScanCb, false);
+  scan->setActiveScan(true);
+  scan->setInterval(100);
+  scan->setWindow(99);
+
+  // Duration is milliseconds in NimBLE-Arduino 2.x.
+  if (!scan->start(5000, false)) {
+    strCopy(g_filterScanStatus, sizeof(g_filterScanStatus), "error");
+    strCopy(g_filterBleError, sizeof(g_filterBleError), "BLE scan failed to start");
+    return;
+  }
+
+  const unsigned long deadline = millis() + 12000;
+  while (!g_bleScanEnded && (long)(deadline - millis()) > 0) {
+    delay(30);
+    if (mqttClient.connected()) {
+      mqttClient.loop();
+    }
+  }
+  if (!g_bleScanEnded) {
+    scan->stop();
+    strCopy(g_filterScanStatus, sizeof(g_filterScanStatus), "error");
+    strCopy(g_filterBleError, sizeof(g_filterBleError), "BLE scan timeout");
+  }
+}
+
+static void publishAckFilter(const char* correlationId) {
+  if (!mqttClient.connected()) return;
+
+  StaticJsonDocument<384> doc;
+  doc["source"] = "mqtt_cmd";
+  doc["device_id"] = DEVICE_ID;
+  doc["ip"] = localIpString();
+  doc["uptime_ms"] = millis();
+  if (correlationId && strlen(correlationId) > 0) {
+    doc["correlation_id"] = correlationId;
+  }
+  doc["filter_last_address"] = g_filterBoundAddr;
+
+  char payload[384];
+  serializeJson(doc, payload, sizeof(payload));
+  mqttClient.publish(topicAckFilter.c_str(), payload, false);
+}
+
+static void handleFilterCommand(JsonDocument& doc) {
+  const char* action = doc["action"] | "";
+  const char* correlationId = doc["correlation_id"] | "";
+
+  if (strcmp(action, "ble_scan") == 0) {
+    strCopy(g_pendingFilterAckCorr, sizeof(g_pendingFilterAckCorr), correlationId);
+    g_pendingBleScan = true;
+    return;
+  }
+
+  if (strcmp(action, "bind_ble") == 0) {
+    const char* addr = "";
+    if (doc.containsKey("payload") && doc["payload"].is<JsonObject>()) {
+      JsonObject pl = doc["payload"].as<JsonObject>();
+      if (pl.containsKey("address")) {
+        addr = pl["address"] | "";
+      }
+    }
+    if (!addr[0]) {
+      strCopy(g_filterBleError, sizeof(g_filterBleError), "bind_ble missing payload.address");
+    } else {
+      saveFilterBoundAddress(addr);
+      g_filterBleError[0] = 0;
+    }
+    publishAckFilter(correlationId);
+    return;
+  }
+
+  strCopy(
+      g_filterBleError,
+      sizeof(g_filterBleError),
+      "Pump GATT (connect/on/off/modes) not in this firmware; use Scan/Bind, then extend sketch or vendor app.");
+
+  if (strcmp(action, "connect") == 0 || strcmp(action, "disconnect") == 0 ||
+      strcmp(action, "on") == 0 || strcmp(action, "off") == 0 ||
+      strcmp(action, "mode_constant") == 0 || strcmp(action, "mode_pulse") == 0 ||
+      strcmp(action, "mode_dashed") == 0 || strcmp(action, "mode_sine") == 0 ||
+      strcmp(action, "read_state") == 0) {
+    publishAckFilter(correlationId);
+    return;
+  }
+
+  strCopy(g_filterBleError, sizeof(g_filterBleError), "Unknown filter action");
+  publishAckFilter(correlationId);
+}
+#endif  // ENABLE_FILTER_BRIDGE
 
 String makeTopic(const String& suffix) {
   return String(MQTT_TOPIC_ROOT) + "/" + String(DEVICE_ID) + "/" + suffix;
@@ -122,46 +299,21 @@ String localIpString() {
   return WiFi.isConnected() ? WiFi.localIP().toString() : String("0.0.0.0");
 }
 
-void formatLocalIp(char* buf, size_t bufSz) {
-  if (!buf || bufSz < 8) return;
-  if (WiFi.status() != WL_CONNECTED) {
-    snprintf(buf, bufSz, "---");
-    return;
-  }
-  IPAddress ip = WiFi.localIP();
-  snprintf(buf, bufSz, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
-}
-
-/** Short boot steps on OLED during setup() (before WiFi.loop exists). */
-void showBootPhase(const char* detailLine) {
-  if (!ENABLE_OLED) return;
-  display.clearBuffer();
-  display.setFont(u8g2_font_6x10_tf);
-  display.drawStr(0, 10, "AQUA v2 boot");
-  display.drawStr(0, 22, detailLine);
-  display.sendBuffer();
-  delay(80);
-}
-
-float analogToVoltage(int raw) {
-  return (3.3f * raw) / 4095.0f;
-}
-
-/** PubSubClient state() for Serial diagnostics when MQTT will not connect. */
 static const char* mqttClientStateStr(int rc) {
   switch (rc) {
-    case -4: return "connection_timeout";
-    case -3: return "connection_lost";
-    case -2: return "connect_failed";
+    case -4: return "timeout";
+    case -3: return "lost";
+    case -2: return "failed";
     case -1: return "disconnected";
     case 0: return "connected";
-    case 1: return "bad_protocol";
-    case 2: return "bad_client_id";
-    case 3: return "unavailable";
     case 4: return "bad_credentials";
     case 5: return "unauthorized";
     default: return "other";
   }
+}
+
+float analogToVoltage(int raw) {
+  return (3.3f * raw) / 4095.0f;
 }
 
 uint8_t percentToPwm(uint8_t percent) {
@@ -195,32 +347,15 @@ void applyLed(bool on, uint8_t brightnessPercent) {
   ledcWrite(LED_PIN, percentToPwm(ledBrightness));
 }
 
-void readDs18b20NonBlocking() {
-  if (!ENABLE_DS18B20) return;
-
-  unsigned long now = millis();
-
-  if (!ds18b20ConversionPending) {
-    bool due = (ds18b20LastCompletedMs == 0) ||
-               (now - ds18b20LastCompletedMs >= DS18B20_READ_INTERVAL_MS);
-    if (due) {
-      tempSensors.requestTemperatures();
-      ds18b20ConversionPending = true;
-      ds18b20RequestAtMs = now;
-    }
-  } else {
-    if (now - ds18b20RequestAtMs >= DS18B20_CONVERSION_WAIT_MS) {
-      float t = tempSensors.getTempCByIndex(0);
-      if (t > -100.0f && t < 100.0f) {
-        currentTempC = t;
-      }
-      ds18b20ConversionPending = false;
-      ds18b20LastCompletedMs = now;
+void readSensors() {
+  if (ENABLE_DS18B20) {
+    tempSensors.requestTemperatures();
+    float t = tempSensors.getTempCByIndex(0);
+    if (t > -100.0f && t < 100.0f) {
+      currentTempC = t;
     }
   }
-}
 
-void readFastSensors() {
   if (ENABLE_BH1750) {
     float lux = lightMeter.readLightLevel();
     if (lux >= 0.0f) {
@@ -259,7 +394,11 @@ void publishStatus(const char* statusValue, bool retained) {
 void publishTelemetry() {
   if (!mqttClient.connected()) return;
 
+#if ENABLE_FILTER_BRIDGE
+  StaticJsonDocument<4096> doc;
+#else
   StaticJsonDocument<512> doc;
+#endif
   doc["device_id"] = DEVICE_ID;
   doc["ip"] = localIpString();
   doc["uptime_ms"] = millis();
@@ -274,8 +413,39 @@ void publishTelemetry() {
   doc["button_pressed"] = buttonPressed;
   doc["button_voltage"] = buttonVoltage;
 
+#if ENABLE_FILTER_BRIDGE
+  if (g_filterBoundAddr[0]) {
+    doc["filter_last_address"] = g_filterBoundAddr;
+  }
+  doc["filter_ble_connected"] = false;
+  if (g_filterBleError[0]) {
+    doc["filter_ble_error"] = g_filterBleError;
+  }
+  if (g_filterScanStatus[0]) {
+    doc["filter_scan_status"] = g_filterScanStatus;
+  }
+  if (g_bleScanCount > 0 && strcmp(g_filterScanStatus, "done") == 0) {
+    JsonArray arr = doc.createNestedArray("filter_scan_results");
+    for (size_t i = 0; i < g_bleScanCount; i++) {
+      JsonObject o = arr.createNestedObject();
+      o["address"] = g_bleScanRows[i].addr;
+      if (g_bleScanRows[i].name[0]) {
+        o["name"] = g_bleScanRows[i].name;
+      }
+      o["rssi"] = g_bleScanRows[i].rssi;
+    }
+  }
+#endif
+
+#if ENABLE_FILTER_BRIDGE
+  char payload[4096];
+#else
   char payload[512];
-  serializeJson(doc, payload, sizeof(payload));
+#endif
+  size_t n = serializeJson(doc, payload, sizeof(payload));
+  if (n >= sizeof(payload) - 1) {
+    Serial.println("telemetry JSON truncated; increase payload buffer");
+  }
   mqttClient.publish(topicTelemetry.c_str(), payload, false);
 }
 
@@ -333,11 +503,8 @@ void handleLedCommand(JsonDocument& doc) {
   } else if (strcmp(action, "off") == 0) {
     applyLed(false, 0);
   } else if (strcmp(action, "toggle") == 0) {
-    if (ledState) {
-      applyLed(false, 0);
-    } else {
-      applyLed(true, ledBrightness > 0 ? ledBrightness : 100);
-    }
+    if (ledState) applyLed(false, 0);
+    else applyLed(true, ledBrightness > 0 ? ledBrightness : 100);
   } else if (strcmp(action, "set_brightness") == 0) {
     int value = -1;
     if (doc.containsKey("payload") && doc["payload"].containsKey("value")) {
@@ -346,11 +513,8 @@ void handleLedCommand(JsonDocument& doc) {
 
     if (value >= 0) {
       uint8_t brightness = normalizeBrightnessToPercent(value);
-      if (brightness == 0) {
-        applyLed(false, 0);
-      } else {
-        applyLed(true, brightness);
-      }
+      if (brightness == 0) applyLed(false, 0);
+      else applyLed(true, brightness);
     }
   }
 
@@ -371,12 +535,15 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     handleHeaterCommand(doc);
   } else if (topicStr == topicCmdLed) {
     handleLedCommand(doc);
+#if ENABLE_FILTER_BRIDGE
+  } else if (topicStr == topicCmdFilter) {
+    handleFilterCommand(doc);
+#endif
   }
 }
 
 void ensureWifi() {
   if (WiFi.status() == WL_CONNECTED) {
-    // Modem sleep drops long-lived TCP/MQTT; room sensor omits this but it helps on full ESP32.
     WiFi.setSleep(WIFI_PS_NONE);
     if (!wifiConnected) {
       lastMqttRetryMs = 0;
@@ -394,7 +561,7 @@ void ensureWifi() {
   if (now - lastWifiRetryMs < WIFI_RETRY_MS) return;
   lastWifiRetryMs = now;
 
-  Serial.println("WiFi: reconnecting (no hard disconnect — same pattern as esp32_room_sensor)...");
+  Serial.println("WiFi: reconnecting (soft, like room sensor)...");
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
@@ -402,11 +569,18 @@ void ensureWifi() {
 void subscribeTopics() {
   mqttClient.subscribe(topicCmdHeater.c_str());
   mqttClient.subscribe(topicCmdLed.c_str());
+#if ENABLE_FILTER_BRIDGE
+  mqttClient.subscribe(topicCmdFilter.c_str());
+#endif
 
   Serial.print("Subscribed: ");
   Serial.println(topicCmdHeater);
   Serial.print("Subscribed: ");
   Serial.println(topicCmdLed);
+#if ENABLE_FILTER_BRIDGE
+  Serial.print("Subscribed: ");
+  Serial.println(topicCmdFilter);
+#endif
 }
 
 void ensureMqtt() {
@@ -418,11 +592,9 @@ void ensureMqtt() {
 
   mqttConnected = false;
   unsigned long now = millis();
-  // 0 = "retry now" (first boot or WiFi just came back). Non-zero = backoff after last attempt.
   if (lastMqttRetryMs != 0 && (now - lastMqttRetryMs < MQTT_RETRY_MS)) return;
   lastMqttRetryMs = now;
 
-  // Room sensor uses DEVICE_ID as client id (short). Long IDs + some brokers = trouble; stay <= 23 chars.
   char mqttClientId[24];
   snprintf(mqttClientId, sizeof(mqttClientId), "%s-%04X", DEVICE_ID,
            (unsigned)(ESP.getEfuseMac() & 0xFFFF));
@@ -475,50 +647,19 @@ void ensureMqtt() {
     Serial.print(st);
     Serial.print(" (");
     Serial.print(mqttClientStateStr(st));
-    Serial.println(") — check broker IP, port, and username/password if broker requires auth");
+    Serial.println(")");
   }
 }
 
-// Compact RSSI-style arcs (fits two side-by-side on 128px wide display)
-void drawConnectionIcon(int x, int y, bool connected) {
-  display.drawDisc(x, y + 8, 1);
-  display.drawCircle(x, y + 8, 3);
-  display.drawCircle(x, y + 8, 6);
+// U8g2 2.32+ uses drawArc(x,y,rad,start,end) only — old 6-arg ellipse arcs won't compile.
+void drawWifiMqttIcon(int x, int y, bool connected) {
+  display.drawDisc(x, y + 8, 2);
+  display.drawCircle(x, y + 8, 5);
   display.drawCircle(x, y + 8, 9);
+  display.drawCircle(x, y + 8, 13);
   if (!connected) {
-    display.drawLine(x - 8, y, x + 8, y + 16);
+    display.drawLine(x - 9, y - 7, x + 9, y + 9);
   }
-}
-
-/** No sensor numbers until MQTT is up — only link progress. */
-void drawAwaitMqttScreen() {
-  display.clearBuffer();
-  display.setFont(u8g2_font_6x10_tf);
-
-  display.drawStr(0, 10, DEVICE_ID);
-
-  if (!wifiConnected) {
-    display.drawStr(0, 22, "WiFi: linking...");
-    display.drawStr(0, 34, "IP: ---");
-    display.drawStr(0, 46, "MQTT: standby");
-    char br[22];
-    snprintf(br, sizeof(br), "%.18s", MQTT_HOST);
-    display.drawStr(0, 58, br);
-  } else {
-    display.drawStr(0, 22, "WiFi: OK");
-    char ipLine[24];
-    char ipb[16];
-    formatLocalIp(ipb, sizeof(ipb));
-    snprintf(ipLine, sizeof(ipLine), "IP:%s", ipb);
-    display.drawStr(0, 34, ipLine);
-
-    display.drawStr(0, 46, "MQTT: connecting");
-    char br[22];
-    snprintf(br, sizeof(br), "%.18s:%u", MQTT_HOST, (unsigned)MQTT_PORT);
-    display.drawStr(0, 58, br);
-  }
-
-  display.sendBuffer();
 }
 
 void drawSingleScreen() {
@@ -526,44 +667,33 @@ void drawSingleScreen() {
   display.setFont(u8g2_font_6x10_tf);
 
   display.drawStr(0, 9, DEVICE_ID);
-  display.drawStr(74, 9, "W");
-  drawConnectionIcon(82, 0, wifiConnected);
-  display.drawStr(94, 9, "M");
-  drawConnectionIcon(102, 0, mqttConnected);
+  drawWifiMqttIcon(117, 7, mqttConnected);
 
   String line1 = String("IP:") + localIpString();
   display.drawStr(0, 20, line1.c_str());
 
-  char tempStr[12];
-  char luxStr[12];
-  if (isnan(currentTempC)) {
-    strcpy(tempStr, "--");
-  } else {
-    dtostrf(currentTempC, 0, 1, tempStr);
-  }
-  if (isnan(currentLux)) {
-    strcpy(luxStr, "--");
-  } else {
-    dtostrf(currentLux, 0, 0, luxStr);
-  }
-
   char line2[32];
-  snprintf(line2, sizeof(line2), "T:%sC L:%s", tempStr, luxStr);
+  snprintf(line2, sizeof(line2), "T:%sC L:%s",
+           isnan(currentTempC) ? "--" : String(currentTempC, 1).c_str(),
+           isnan(currentLux) ? "--" : String(currentLux, 0).c_str());
   display.drawStr(0, 31, line2);
 
   char line3[32];
   snprintf(line3, sizeof(line3), "Water:%s %.2fV",
-           waterPresent ? "OK" : "LOW", waterVoltage);
+           waterPresent ? "OK" : "LOW",
+           waterVoltage);
   display.drawStr(0, 42, line3);
 
   char line4[32];
   snprintf(line4, sizeof(line4), "Heat:%s LED:%s",
-           heaterState ? "ON" : "OFF", ledState ? "ON" : "OFF");
+           heaterState ? "ON" : "OFF",
+           ledState ? "ON" : "OFF");
   display.drawStr(0, 53, line4);
 
   char line5[32];
   snprintf(line5, sizeof(line5), "Bri:%u Btn:%u",
-           ledBrightness, buttonPressed ? 1 : 0);
+           ledBrightness,
+           buttonPressed ? 1 : 0);
   display.drawStr(0, 64, line5);
 
   display.sendBuffer();
@@ -574,40 +704,32 @@ void drawTelemetryScreen() {
   display.setFont(u8g2_font_6x10_tf);
   display.drawStr(0, 9, "Telemetry");
 
-  char tempStr[12];
-  char luxStr[12];
-  if (isnan(currentTempC)) {
-    strcpy(tempStr, "--");
-  } else {
-    dtostrf(currentTempC, 0, 1, tempStr);
-  }
-  if (isnan(currentLux)) {
-    strcpy(luxStr, "--");
-  } else {
-    dtostrf(currentLux, 0, 0, luxStr);
-  }
-
   char line1[32];
-  snprintf(line1, sizeof(line1), "Temp: %s C", tempStr);
+  snprintf(line1, sizeof(line1), "Temp: %s C",
+           isnan(currentTempC) ? "--" : String(currentTempC, 1).c_str());
   display.drawStr(0, 20, line1);
 
   char line2[32];
-  snprintf(line2, sizeof(line2), "Lux:  %s", luxStr);
+  snprintf(line2, sizeof(line2), "Lux:  %s",
+           isnan(currentLux) ? "--" : String(currentLux, 0).c_str());
   display.drawStr(0, 31, line2);
 
   char line3[32];
   snprintf(line3, sizeof(line3), "Water:%s %.2fV",
-           waterPresent ? "OK" : "LOW", waterVoltage);
+           waterPresent ? "OK" : "LOW",
+           waterVoltage);
   display.drawStr(0, 42, line3);
 
   char line4[32];
   snprintf(line4, sizeof(line4), "Heat:%s LED:%s",
-           heaterState ? "ON" : "OFF", ledState ? "ON" : "OFF");
+           heaterState ? "ON" : "OFF",
+           ledState ? "ON" : "OFF");
   display.drawStr(0, 53, line4);
 
   char line5[32];
   snprintf(line5, sizeof(line5), "Bri:%u Btn:%u",
-           ledBrightness, buttonPressed ? 1 : 0);
+           ledBrightness,
+           buttonPressed ? 1 : 0);
   display.drawStr(0, 64, line5);
 
   display.sendBuffer();
@@ -636,11 +758,6 @@ void drawConnectionScreen() {
 void updateDisplay() {
   if (!ENABLE_OLED) return;
 
-  if (!mqttClient.connected()) {
-    drawAwaitMqttScreen();
-    return;
-  }
-
   if (OLED_SINGLE_SCREEN_MODE) {
     drawSingleScreen();
     return;
@@ -652,11 +769,8 @@ void updateDisplay() {
     displayPage = (displayPage + 1) % 2;
   }
 
-  if (displayPage == 0) {
-    drawTelemetryScreen();
-  } else {
-    drawConnectionScreen();
-  }
+  if (displayPage == 0) drawTelemetryScreen();
+  else drawConnectionScreen();
 }
 
 void setupTopics() {
@@ -666,18 +780,24 @@ void setupTopics() {
   topicCmdLed = makeTopic("cmd/led");
   topicAckHeater = makeTopic("ack/heater");
   topicAckLed = makeTopic("ack/led");
+#if ENABLE_FILTER_BRIDGE
+  topicCmdFilter = makeTopic("cmd/filter");
+  topicAckFilter = makeTopic("ack/filter");
+#endif
 }
 
 void setupDisplay() {
   if (!ENABLE_OLED) return;
   display.begin();
-  showBootPhase("I2C + OLED");
+  display.clearBuffer();
+  display.setFont(u8g2_font_6x10_tf);
+  display.drawStr(0, 12, "AQUA booting...");
+  display.sendBuffer();
 }
 
 void setupSensors() {
   if (ENABLE_DS18B20) {
     tempSensors.begin();
-    tempSensors.setWaitForConversion(false);
   }
   if (ENABLE_BH1750) {
     lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
@@ -696,12 +816,8 @@ void setupOutputs() {
 }
 
 void setupInputs() {
-  if (ENABLE_WATER_SENSOR) {
-    pinMode(WATER_LEVEL_PIN, INPUT);
-  }
-  if (ENABLE_BUTTON_INPUT) {
-    pinMode(BUTTON_PIN, INPUT);
-  }
+  if (ENABLE_WATER_SENSOR) pinMode(WATER_LEVEL_PIN, INPUT);
+  if (ENABLE_BUTTON_INPUT) pinMode(BUTTON_PIN, INPUT);
 }
 
 void setupMqtt() {
@@ -709,7 +825,7 @@ void setupMqtt() {
   mqttClient.setCallback(mqttCallback);
   mqttClient.setBufferSize(1024);
   mqttClient.setKeepAlive(60);
-  mqttClient.setSocketTimeout(10);
+  mqttClient.setSocketTimeout(15);
 }
 
 void setup() {
@@ -721,25 +837,18 @@ void setup() {
   setupTopics();
   setupDisplay();
   setupOutputs();
-  showBootPhase("Relay + LED PWM");
   setupInputs();
-  showBootPhase("Analog inputs");
   setupSensors();
-  showBootPhase("Temp + light (I2C)");
   setupMqtt();
-  showBootPhase("MQTT client ready");
 
-  Serial.println("AQUA controller v2 starting...");
-  Serial.print("Device ID (must match app): ");
+#if ENABLE_FILTER_BRIDGE
+  loadFilterBoundAddress();
+#endif
+
+  Serial.println("AQUA controller starting...");
+  Serial.print("Device ID: ");
   Serial.println(DEVICE_ID);
-  Serial.print("MQTT broker: ");
-  Serial.print(MQTT_HOST);
-  Serial.print(":");
-  Serial.println(MQTT_PORT);
-  Serial.print("Telemetry topic: ");
-  Serial.println(topicTelemetry);
 
-  showBootPhase("WiFi starting...");
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
@@ -752,25 +861,20 @@ void loop() {
     mqttClient.loop();
   } else {
     mqttConnected = false;
-    if (wifiConnected) {
-      unsigned long t = millis();
-      if (t - lastMqttDiagMs >= 30000) {
-        lastMqttDiagMs = t;
-        int st = mqttClient.state();
-        Serial.print("MQTT offline (WiFi OK). state=");
-        Serial.print(st);
-        Serial.print(" ");
-        Serial.print(mqttClientStateStr(st));
-        Serial.print(" | broker ");
-        Serial.print(MQTT_HOST);
-        Serial.print(":");
-        Serial.println(MQTT_PORT);
-      }
-    }
   }
 
-  readDs18b20NonBlocking();
-  readFastSensors();
+#if ENABLE_FILTER_BRIDGE
+  if (g_pendingBleScan && mqttClient.connected()) {
+    g_pendingBleScan = false;
+    char corr[sizeof(g_pendingFilterAckCorr)];
+    strCopy(corr, sizeof(corr), g_pendingFilterAckCorr);
+    runDeferredBleScan();
+    publishAckFilter(corr);
+    publishTelemetry();
+  }
+#endif
+
+  readSensors();
 
   unsigned long now = millis();
 
@@ -785,5 +889,5 @@ void loop() {
   }
 
   updateDisplay();
-  delay(20);
+  delay(50);
 }
