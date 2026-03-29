@@ -22,6 +22,7 @@ import {
 import { Scenarios } from './Scenarios'
 import { FilterPanel } from './FilterPanel'
 import { SSE_REFETCH_EVENT } from '../hooks/useSSE'
+import { useToast } from '../contexts/ToastContext'
 
 interface DashboardProps {
   deviceId: string | null
@@ -58,6 +59,15 @@ function bucketForRangeHours(rangeHours: number): string | undefined {
 
 const isRoomSensor = (d: ApiDevice | null) => d?.capabilities?.room_sensor === true
 
+/** Backend sets `ts` to server time when MQTT telemetry from the device is stored — i.e. last receive time. */
+function formatLastUpdatedFromDevice(ts: string | undefined | null): string {
+  if (!ts) return '-'
+  return new Date(ts).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'medium' })
+}
+
+const LAST_UPDATED_TOOLTIP =
+  'Local time when the server last received a telemetry message from this device (MQTT). Same as database row time, not the ESP32 internal clock.'
+
 function inferNextHeaterOn(
   action: 'on' | 'off' | 'toggle',
   current: boolean | null | undefined
@@ -68,6 +78,7 @@ function inferNextHeaterOn(
 }
 
 export function Dashboard({ deviceId, device, telemetry, refetchTelemetry }: DashboardProps) {
+  const toast = useToast()
   const roomSensor = isRoomSensor(device)
   const [chartData, setChartData] = useState<Array<Record<string, string | number | null>>>([])
   const [rangeHours, setRangeHours] = useState(24)
@@ -221,16 +232,28 @@ export function Dashboard({ deviceId, device, telemetry, refetchTelemetry }: Das
       const { correlation_id } = await sendHeaterCommand(deviceId, action)
       const start = Date.now()
       const check = async () => {
-        const status = await getCommandStatus(correlation_id)
-        if (status.status === 'ACKED') {
-          setPendingHeater(null)
-          setHeaterOverride(null)
-          void refetchTelemetry()
-          return
+        try {
+          const status = await getCommandStatus(correlation_id)
+          if (status.status === 'ACKED') {
+            setPendingHeater(null)
+            setHeaterOverride(null)
+            void refetchTelemetry()
+            toast('Heater updated.', 'success', 2200)
+            return
+          }
+          if (status.status === 'TIMEOUT') {
+            setPendingHeater(null)
+            setHeaterOverride(null)
+            toast('Heater command timed out — no reply from the ESP32 in time.', 'error')
+            return
+          }
+        } catch {
+          /* transient or command row lag */
         }
         if (Date.now() - start > ACK_TIMEOUT_MS) {
           setPendingHeater(null)
           setHeaterOverride(null)
+          toast('No heater acknowledgment yet — check MQTT and the controller.', 'error')
           return
         }
         setTimeout(check, CMD_STATUS_POLL_MS)
@@ -239,7 +262,7 @@ export function Dashboard({ deviceId, device, telemetry, refetchTelemetry }: Das
     } catch (e) {
       setPendingHeater(null)
       setHeaterOverride(null)
-      alert(String(e))
+      toast(e instanceof Error ? e.message : String(e), 'error')
     }
   }
 
@@ -251,14 +274,25 @@ export function Dashboard({ deviceId, device, telemetry, refetchTelemetry }: Das
       const { correlation_id } = await sendLedCommand(deviceId, action, payload)
       const start = Date.now()
       const check = async () => {
-        const status = await getCommandStatus(correlation_id)
-        if (status.status === 'ACKED') {
-          setPendingLed(null)
-          void refetchTelemetry()
-          return
+        try {
+          const status = await getCommandStatus(correlation_id)
+          if (status.status === 'ACKED') {
+            setPendingLed(null)
+            void refetchTelemetry()
+            toast('LED updated.', 'success', 2200)
+            return
+          }
+          if (status.status === 'TIMEOUT') {
+            setPendingLed(null)
+            toast('LED command timed out — no reply from the ESP32 in time.', 'error')
+            return
+          }
+        } catch {
+          /* transient */
         }
         if (Date.now() - start > ACK_TIMEOUT_MS) {
           setPendingLed(null)
+          toast('No LED acknowledgment yet — check MQTT and the controller.', 'error')
           return
         }
         setTimeout(check, CMD_STATUS_POLL_MS)
@@ -266,7 +300,7 @@ export function Dashboard({ deviceId, device, telemetry, refetchTelemetry }: Das
       setTimeout(check, CMD_STATUS_FIRST_POLL_MS)
     } catch (e) {
       setPendingLed(null)
-      alert(String(e))
+      toast(e instanceof Error ? e.message : String(e), 'error')
     }
   }
 
@@ -279,6 +313,7 @@ export function Dashboard({ deviceId, device, telemetry, refetchTelemetry }: Das
   }
 
   const t = telemetry
+  const lastUpdatedDisplay = formatLastUpdatedFromDevice(t?.ts)
   const heaterDisplayOn =
     heaterOverride !== null ? heaterOverride : (t?.heater_on ?? null)
 
@@ -298,8 +333,9 @@ export function Dashboard({ deviceId, device, telemetry, refetchTelemetry }: Das
             variant="lux"
           />
           <Card
-            label="Last update"
-            value={t?.ts ? new Date(t.ts).toLocaleTimeString() : '-'}
+            label="Last updated"
+            value={lastUpdatedDisplay}
+            title={t?.ts ? LAST_UPDATED_TOOLTIP : undefined}
             variant="neutral"
           />
         </div>
@@ -453,8 +489,9 @@ export function Dashboard({ deviceId, device, telemetry, refetchTelemetry }: Das
           variant={t?.led_on ? 'on' : 'off'}
         />
         <Card
-          label="Last update"
-          value={t?.ts ? new Date(t.ts).toLocaleTimeString() : '-'}
+          label="Last updated"
+          value={lastUpdatedDisplay}
+          title={t?.ts ? LAST_UPDATED_TOOLTIP : undefined}
           variant="neutral"
         />
       </div>
@@ -696,10 +733,12 @@ function Card({
   label,
   value,
   variant,
+  title,
 }: {
   label: string
   value: string
   variant: 'temp' | 'lux' | 'ok' | 'alarm' | 'on' | 'off' | 'neutral'
+  title?: string
 }) {
   const colors: Record<string, string> = {
     temp: 'border-cyan-500/50 bg-cyan-950/30',
@@ -711,7 +750,7 @@ function Card({
     neutral: 'border-slate-700/50 bg-slate-900/30',
   }
   return (
-    <div className={`rounded-xl border p-4 ${colors[variant] || colors.neutral}`}>
+    <div title={title} className={`rounded-xl border p-4 ${colors[variant] || colors.neutral}`}>
       <div className="text-xs font-medium uppercase tracking-wider text-slate-500">{label}</div>
       <div className="mt-1 font-display text-lg font-semibold text-slate-100">{value}</div>
     </div>

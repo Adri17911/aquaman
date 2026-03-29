@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, useMemo } from 'react'
 import { useSSE } from './hooks/useSSE'
+import { ToastProvider } from './contexts/ToastContext'
 import { Dashboard } from './components/Dashboard'
 import { Compare } from './components/Compare'
 import { Login } from './components/Login'
@@ -22,7 +23,7 @@ function AuthenticatedApp({
   const { data: health } = useHealth()
   const { data: apiDevices } = useDevices()
   const { data: telemetry, refetch: refetchTelemetry } = useLatestTelemetry(deviceId)
-  useSSE()
+  const sse = useSSE()
 
   const devices = useMemo(() => {
     if (!apiDevices) return null
@@ -45,7 +46,13 @@ function AuthenticatedApp({
   const selectedDevice = devices?.find((d) => d.device_id === deviceId) ?? null
 
   return (
+    <ToastProvider>
     <div className="min-h-screen">
+      {sse.error && (
+        <div className="border-b border-amber-900/60 bg-amber-950/55 px-4 py-2 text-center text-xs text-amber-100/95">
+          Live updates are off (SSE disconnected). The app will retry with backoff; data may lag until the connection returns. If this persists, check <code className="rounded bg-black/30 px-1">/api/stream</code> on your reverse proxy.
+        </div>
+      )}
       <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
           <h1 className="font-display text-xl font-semibold tracking-tight text-cyan-400">
@@ -138,6 +145,7 @@ function AuthenticatedApp({
         )}
       </main>
     </div>
+    </ToastProvider>
   )
 }
 

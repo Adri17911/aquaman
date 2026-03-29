@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   sendFilterCommand,
   getCommandStatus,
@@ -6,8 +6,10 @@ import {
   type FilterBleScanResult,
   type TelemetryPoint,
 } from '../api'
+import { useToast } from '../contexts/ToastContext'
 
 const ACK_SHORT_MS = 8000
+const ACK_BIND_MS = 22000
 const ACK_CONNECT_MS = 35000
 const ACK_SCAN_MS = 25000
 const ACK_POLL_MS = 100
@@ -20,34 +22,69 @@ interface FilterPanelProps {
   refetchTelemetry: () => void
 }
 
+type AckWait = 'acked' | 'backend_timeout' | 'wait_timeout'
+
 export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPanelProps) {
+  const toast = useToast()
   const [pending, setPending] = useState<string | null>(null)
   const [lastUiError, setLastUiError] = useState<string | null>(null)
   const [scanList, setScanList] = useState<FilterBleScanResult[]>([])
   const [selectedAddress, setSelectedAddress] = useState('')
+  const [scanHint, setScanHint] = useState('')
+  const [scanBarPct, setScanBarPct] = useState(0)
 
-  const waitAck = useCallback(async (correlationId: string, timeoutMs: number) => {
+  useEffect(() => {
+    if (pending !== 'ble_scan') return
+    const t0 = Date.now()
+    const id = window.setInterval(() => {
+      const elapsed = Date.now() - t0
+      setScanBarPct((prev) => {
+        if (prev >= 95) return prev
+        const target = Math.min(88, 6 + (elapsed / 13000) * 82)
+        return Math.max(prev, target)
+      })
+    }, 120)
+    return () => clearInterval(id)
+  }, [pending])
+
+  const waitAckResult = useCallback(async (correlationId: string, timeoutMs: number): Promise<AckWait> => {
     const start = Date.now()
-    const check = async (): Promise<boolean> => {
-      const status = await getCommandStatus(correlationId)
-      if (status.status === 'ACKED') return true
-      if (Date.now() - start > timeoutMs) return false
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const status = await getCommandStatus(correlationId)
+        if (status.status === 'ACKED') return 'acked'
+        if (status.status === 'TIMEOUT') return 'backend_timeout'
+      } catch {
+        /* command row may lag after publish, or transient network */
+      }
       await new Promise((r) => setTimeout(r, ACK_POLL_MS))
-      return check()
     }
-    return check()
+    return 'wait_timeout'
   }, [])
+
+  const explainAckFailure = (res: AckWait) => {
+    if (res === 'backend_timeout') {
+      return 'The server marked this command as timed out before the controller replied. Check ESP32 and MQTT, or increase mqtt.command_timeout_seconds in settings (or AQUA_COMMAND_TIMEOUT_SECONDS in Docker).'
+    }
+    return 'No acknowledgment from the controller in time. Check ESP32, MQTT, and that firmware uses deferred ack/filter publishes.'
+  }
 
   const runAction = async (action: string, timeoutMs: number) => {
     setLastUiError(null)
     setPending(action)
     try {
       const { correlation_id } = await sendFilterCommand(deviceId, action)
-      const ok = await waitAck(correlation_id, timeoutMs)
-      if (!ok) setLastUiError('No acknowledgment from controller (check ESP32 / MQTT).')
+      const res = await waitAckResult(correlation_id, timeoutMs)
+      if (res !== 'acked') {
+        const msg = explainAckFailure(res)
+        setLastUiError(msg)
+        toast(msg, 'error')
+      }
       refetchTelemetry()
     } catch (e) {
-      setLastUiError(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      setLastUiError(msg)
+      toast(msg, 'error')
     } finally {
       setPending(null)
     }
@@ -62,11 +99,21 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
     setPending(action)
     try {
       const { correlation_id } = await sendFilterCommand(deviceId, action, payload)
-      const ok = await waitAck(correlation_id, timeoutMs)
-      if (!ok) setLastUiError('No acknowledgment from controller (check ESP32 / MQTT).')
+      const res = await waitAckResult(correlation_id, timeoutMs)
+      if (res === 'acked') {
+        if (action === 'bind_ble') {
+          toast('Bluetooth address saved on the ESP32. You can use Connect or scan again.', 'success')
+        }
+      } else {
+        const msg = explainAckFailure(res)
+        setLastUiError(msg)
+        toast(action === 'bind_ble' ? `Could not save address: ${msg}` : msg, 'error')
+      }
       refetchTelemetry()
     } catch (e) {
-      setLastUiError(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      setLastUiError(msg)
+      toast(msg, 'error')
     } finally {
       setPending(null)
     }
@@ -74,14 +121,23 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
 
   const handleBleScan = async () => {
     setLastUiError(null)
+    setScanHint('Sending scan command to your controller…')
+    setScanBarPct(4)
     setPending('ble_scan')
     let userMsg: string | null = null
     try {
       const { correlation_id } = await sendFilterCommand(deviceId, 'ble_scan')
-      const ok = await waitAck(correlation_id, ACK_SCAN_MS)
-      if (!ok) {
-        userMsg = 'Scan command was not acknowledged (check ESP32 / MQTT).'
+      setScanHint('Waiting for the ESP32 to acknowledge (MQTT)…')
+      setScanBarPct((p) => Math.max(p, 16))
+      const scanAck = await waitAckResult(correlation_id, ACK_SCAN_MS)
+      if (scanAck !== 'acked') {
+        userMsg =
+          scanAck === 'backend_timeout'
+            ? 'Scan command timed out on the server before the ESP32 acknowledged. Increase command_timeout_seconds or check MQTT.'
+            : 'Scan command was not acknowledged (check ESP32 / MQTT).'
       } else {
+        setScanHint('Bluetooth scan running on the ESP32 (about 5 seconds). Keep the pump powered nearby.')
+        setScanBarPct((p) => Math.max(p, 34))
         const deadline = Date.now() + SCAN_RESULTS_WAIT_MS
         let results: FilterBleScanResult[] | null = null
         while (Date.now() < deadline) {
@@ -103,6 +159,9 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
             setSelectedAddress((prev) =>
               results!.some((row) => row.address === prev) ? prev : results![0].address
             )
+            setScanBarPct(100)
+            setScanHint(`Found ${results.length} device(s). Pick one below, then Use this address.`)
+            await new Promise((r) => setTimeout(r, 900))
           } else {
             userMsg =
               'No Bluetooth devices in telemetry yet. If your ESP32 firmware does not handle the ble_scan command, update it so scan results are published in telemetry.'
@@ -113,6 +172,8 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
       userMsg = e instanceof Error ? e.message : String(e)
     } finally {
       setPending(null)
+      setScanBarPct(0)
+      setScanHint('')
       if (userMsg) setLastUiError(userMsg)
       refetchTelemetry()
     }
@@ -121,7 +182,7 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
   const handleBindBle = () => {
     const addr = selectedAddress.trim()
     if (!addr) return
-    void runActionPayload('bind_ble', { address: addr }, ACK_SHORT_MS)
+    void runActionPayload('bind_ble', { address: addr }, ACK_BIND_MS)
   }
 
   const fromTelemetry = telemetry?.filter_scan_results
@@ -147,7 +208,9 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
   const addrStr = t?.filter_last_address?.trim() || '—'
   const scanStatusStr = t?.filter_scan_status?.trim()
 
-  const busy = pending !== null
+  const scanBusy = pending === 'ble_scan'
+  const bindBusy = pending === 'bind_ble'
+  const otherFilterBusy = pending !== null && !scanBusy && !bindBusy
 
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
@@ -165,7 +228,7 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
           <button
             type="button"
-            disabled={busy}
+            disabled={scanBusy || bindBusy}
             onClick={() => void handleBleScan()}
             className="rounded-lg bg-indigo-700 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
           >
@@ -175,7 +238,7 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
             className="min-w-[12rem] rounded-lg border border-slate-600 bg-slate-900 px-2 py-2 text-sm text-slate-200 disabled:opacity-50"
             value={selectedAddress}
             onChange={(e) => setSelectedAddress(e.target.value)}
-            disabled={busy || displayList.length === 0}
+            disabled={scanBusy || displayList.length === 0}
           >
             <option value="">Select device…</option>
             {displayList.map((row) => {
@@ -192,13 +255,48 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
           </select>
           <button
             type="button"
-            disabled={busy || !selectedAddress.trim()}
+            disabled={bindBusy || scanBusy || !selectedAddress.trim()}
             onClick={handleBindBle}
             className="rounded-lg bg-slate-600 px-3 py-2 text-sm font-medium text-slate-100 hover:bg-slate-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {pending === 'bind_ble' ? '…' : 'Use this address'}
+            {pending === 'bind_ble' ? 'Saving…' : 'Use this address'}
           </button>
         </div>
+        {bindBusy && (
+          <div className="mt-2 space-y-1" role="status" aria-live="polite">
+            <p className="text-xs text-slate-400">
+              Writing address to the ESP32 (NVS) and waiting for MQTT acknowledgment…
+            </p>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+              <div className="h-full w-full animate-pulse rounded-full bg-slate-500/80" />
+            </div>
+          </div>
+        )}
+        {(pending === 'ble_scan' || scanHint) && (
+          <div
+            className="mt-3 space-y-1.5"
+            role="status"
+            aria-live="polite"
+            aria-busy={pending === 'ble_scan'}
+          >
+            {scanHint && (
+              <p className="text-xs text-indigo-200/90">{scanHint}</p>
+            )}
+            <div
+              className="h-2 w-full overflow-hidden rounded-full bg-slate-800"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(scanBarPct)}
+              aria-label="Bluetooth scan progress"
+            >
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-indigo-600 to-violet-500 transition-[width] duration-200 ease-out"
+                style={{ width: `${Math.min(100, scanBarPct)}%` }}
+              />
+            </div>
+          </div>
+        )}
         {(scanStatusStr || displayList.length > 0) && (
           <p className="mt-2 text-xs text-slate-500">
             {displayList.length > 0 ? (
@@ -243,7 +341,7 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
-          disabled={busy}
+          disabled={otherFilterBusy || scanBusy}
           onClick={() => runAction('connect', ACK_CONNECT_MS)}
           className="rounded-lg bg-cyan-700 px-3 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:opacity-50"
         >
@@ -251,7 +349,7 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
         </button>
         <button
           type="button"
-          disabled={busy}
+          disabled={otherFilterBusy || scanBusy}
           onClick={() => runAction('disconnect', ACK_SHORT_MS)}
           className="rounded-lg bg-slate-600 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-500 disabled:opacity-50"
         >
@@ -259,7 +357,7 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
         </button>
         <button
           type="button"
-          disabled={busy || !bleOk}
+          disabled={otherFilterBusy || scanBusy || !bleOk}
           onClick={() => runAction('on', ACK_SHORT_MS)}
           className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
         >
@@ -267,7 +365,7 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
         </button>
         <button
           type="button"
-          disabled={busy || !bleOk}
+          disabled={otherFilterBusy || scanBusy || !bleOk}
           onClick={() => runAction('off', ACK_SHORT_MS)}
           className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed"
         >
@@ -287,7 +385,7 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
           <button
             key={action}
             type="button"
-            disabled={busy || !bleOk}
+            disabled={otherFilterBusy || scanBusy || !bleOk}
             onClick={() => runAction(action, ACK_SHORT_MS)}
             className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -296,7 +394,7 @@ export function FilterPanel({ deviceId, telemetry, refetchTelemetry }: FilterPan
         ))}
         <button
           type="button"
-          disabled={busy || !bleOk}
+          disabled={otherFilterBusy || scanBusy || !bleOk}
           onClick={() => runAction('read_state', ACK_SHORT_MS)}
           className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >

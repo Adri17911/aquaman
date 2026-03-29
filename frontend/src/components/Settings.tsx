@@ -8,6 +8,7 @@ import {
   updateDevice,
   type ApiDevice,
 } from '../api'
+import { useToast } from '../contexts/ToastContext'
 
 const STORAGE_KEY_AUTO_DISCOVERY = 'aqua-auto-discovery'
 const STORAGE_KEY_MANUAL_DEVICES = 'aqua-manual-devices'
@@ -50,6 +51,7 @@ interface SettingsProps {
 }
 
 export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
+  const toast = useToast()
   const [health, setHealth] = useState<Awaited<ReturnType<typeof getHealth>> | null>(null)
   const [mqttSettings, setMqttSettings] = useState<Awaited<ReturnType<typeof getMqttSettings>> | null>(null)
   const [mqttBrokerHost, setMqttBrokerHost] = useState('')
@@ -85,9 +87,12 @@ export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
       setMqttSaveSuccess(true)
       getHealth().then(setHealth).catch(() => {})
       onSettingsChange?.()
+      toast('MQTT broker host saved.', 'success', 2400)
       setTimeout(() => setMqttSaveSuccess(false), 2000)
     } catch (err) {
-      setMqttSaveError(err instanceof Error ? err.message : 'Failed to save')
+      const msg = err instanceof Error ? err.message : 'Failed to save'
+      setMqttSaveError(msg)
+      toast(msg, 'error')
     }
   }
 
@@ -104,8 +109,11 @@ export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
       const list = await getDevices()
       setDevices(list)
       onSettingsChange?.()
+      toast(`Device ${id} added.`, 'success', 2400)
     } catch (err) {
-      setDeviceManageError(err instanceof Error ? err.message : 'Failed to add device')
+      const msg = err instanceof Error ? err.message : 'Failed to add device'
+      setDeviceManageError(msg)
+      toast(msg, 'error')
     } finally {
       setAdding(false)
     }
@@ -125,8 +133,11 @@ export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
       const list = await getDevices()
       setDevices(list)
       onSettingsChange?.()
+      toast('Device name saved.', 'success', 2200)
     } catch (err) {
-      setDeviceManageError(err instanceof Error ? err.message : 'Failed to update name')
+      const msg = err instanceof Error ? err.message : 'Failed to update name'
+      setDeviceManageError(msg)
+      toast(msg, 'error')
     }
   }
 
@@ -140,8 +151,11 @@ export function Settings({ isOpen, onClose, onSettingsChange }: SettingsProps) {
       const list = await getDevices()
       setDevices(list)
       onSettingsChange?.()
+      toast(dev.enabled ? 'Device disabled in UI.' : 'Device enabled.', 'info', 2200)
     } catch (err) {
-      setDeviceManageError(err instanceof Error ? err.message : 'Failed to update')
+      const msg = err instanceof Error ? err.message : 'Failed to update'
+      setDeviceManageError(msg)
+      toast(msg, 'error')
     } finally {
       setTogglingEnabled(null)
     }

@@ -493,5 +493,21 @@ export function useLatestTelemetry(deviceId: string | null, intervalMs = 1000) {
     const id = setInterval(refetch, intervalMs)
     return () => clearInterval(id)
   }, [refetch, intervalMs])
+  useEffect(() => {
+    const onSse = () => refetch()
+    window.addEventListener(SSE_REFETCH_EVENT, onSse)
+    return () => window.removeEventListener(SSE_REFETCH_EVENT, onSse)
+  }, [refetch])
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void refetch()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('focus', onVis)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', onVis)
+    }
+  }, [refetch])
   return { data, refetch }
 }

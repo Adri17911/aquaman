@@ -7,6 +7,7 @@ import {
   Schedule,
 } from '../api'
 import { CurveEditor, DEFAULT_CURVE, type CurvePoint } from './CurveEditor'
+import { useToast } from '../contexts/ToastContext'
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
@@ -51,6 +52,7 @@ const defaultForm: FormState = {
 }
 
 export function Scenarios({ deviceId, onSchedulesChange }: ScenariosProps) {
+  const toast = useToast()
   const [open, setOpen] = useState(false)
   const [schedules, setSchedules] = useState<Schedule[]>([])
   const [editing, setEditing] = useState<Schedule | null>(null)
@@ -63,7 +65,9 @@ export function Scenarios({ deviceId, onSchedulesChange }: ScenariosProps) {
     try {
       const list = await listSchedules(deviceId)
       setSchedules(list || [])
-    } catch (_) {}
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not load schedules', 'error')
+    }
   }, [deviceId])
 
   useEffect(() => {
@@ -139,8 +143,11 @@ export function Scenarios({ deviceId, onSchedulesChange }: ScenariosProps) {
       resetForm()
       load()
       onSchedulesChange?.()
+      toast(editing ? 'Schedule updated.' : 'Schedule added.', 'success', 2600)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save')
+      const msg = err instanceof Error ? err.message : 'Failed to save'
+      setError(msg)
+      toast(msg, 'error')
     } finally {
       setSaving(false)
     }
@@ -153,8 +160,9 @@ export function Scenarios({ deviceId, onSchedulesChange }: ScenariosProps) {
       if (editing?.id === id) resetForm()
       load()
       onSchedulesChange?.()
+      toast('Schedule deleted.', 'success', 2200)
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to delete')
+      toast(err instanceof Error ? err.message : 'Failed to delete', 'error')
     }
   }
 

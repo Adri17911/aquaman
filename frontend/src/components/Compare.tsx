@@ -11,6 +11,7 @@ import {
 } from 'recharts'
 import { getTelemetryMultiDevice } from '../api'
 import type { ApiDevice } from '../api'
+import { useToast } from '../contexts/ToastContext'
 
 const RANGES = [1, 6, 24, 168, 8760] as const
 const COMPARE_COLORS = ['#22d3ee', '#38bdf8', '#fbbf24', '#34d399', '#a78bfa', '#f472b6', '#a3e635']
@@ -56,6 +57,7 @@ interface CompareProps {
 }
 
 export function Compare({ devices }: CompareProps) {
+  const toast = useToast()
   const [series, setSeries] = useState<SeriesRow[]>([])
   const [rangeHours, setRangeHours] = useState(24)
   const [chartData, setChartData] = useState<Array<Record<string, string | number | null>>>([])
@@ -91,8 +93,10 @@ export function Compare({ devices }: CompareProps) {
       })
       setChartData(points)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load')
+      const msg = e instanceof Error ? e.message : 'Failed to load'
+      setError(msg)
       setChartData([])
+      toast(`Compare chart: ${msg}`, 'error')
     } finally {
       setLoading(false)
     }

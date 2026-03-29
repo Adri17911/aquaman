@@ -195,10 +195,17 @@ async def require_auth(request: Request, call_next):
     if path in PUBLIC_PATHS:
         return await call_next(request)
     auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
+    token = None
+    if auth and auth.startswith("Bearer "):
+        token = auth[7:].strip()
+    # EventSource cannot send Authorization; allow JWT as query param for SSE only.
+    if not token and path == "/stream":
+        q = request.query_params.get("token") or request.query_params.get("access_token")
+        if q:
+            token = q.strip()
+    if not token:
         logger.warning("401 path=%s: missing or invalid Authorization header", path)
         return JSONResponse({"detail": "Not authenticated"}, status_code=401)
-    token = auth[7:].strip()
     payload = decode_access_token(token)
     if not payload:
         logger.warning("401 path=%s: JWT invalid or expired (check auth logs)", path)
