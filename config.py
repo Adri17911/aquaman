@@ -28,8 +28,8 @@ class MqttSettings(BaseModel):
     keepalive_seconds: int = Field(default=60, ge=10, le=600)
     telemetry_qos: int = Field(default=1, ge=0, le=2)
     command_qos: int = Field(default=1, ge=0, le=2)
-    # BLE scan on ESP32 can take ~5s before ack; allow headroom for MQTT latency.
-    command_timeout_seconds: int = Field(default=25, ge=1, le=120)
+    # BLE/MQTT/remote broker latency: keep above UI filter wait windows; default 45s (was 25).
+    command_timeout_seconds: int = Field(default=45, ge=1, le=120)
     # MQTT over TLS (MQTTs) for internet-facing devices
     use_tls: bool = False
     ca_certs: str | None = None  # Path to CA certificate file (optional; system CA used if unset)

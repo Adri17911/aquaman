@@ -241,8 +241,9 @@ static void runDeferredBleScan() {
   }
 }
 
-static void publishAckFilter(const char* correlationId) {
-  if (!mqttClient.connected()) return;
+/** @return false if not connected or publish failed (caller must keep ack in queue and retry). */
+static bool publishAckFilter(const char* correlationId) {
+  if (!mqttClient.connected()) return false;
 
   StaticJsonDocument<384> doc;
   doc["source"] = "mqtt_cmd";
@@ -256,10 +257,14 @@ static void publishAckFilter(const char* correlationId) {
 
   char payload[384];
   serializeJson(doc, payload, sizeof(payload));
-  mqttClient.publish(topicAckFilter.c_str(), payload, false);
+  bool ok = mqttClient.publish(topicAckFilter.c_str(), payload, false);
+  if (!ok) {
+    Serial.println("MQTT: filter ack publish failed (will retry)");
+  }
+  return ok;
 }
 
-// PubSubClient: publishing from mqttCallback often fails; defer ack to loop().
+// Try immediate publish first (bind_ble / ble_scan acks often succeed here); queue only on failure.
 // Several filter cmds can be processed in one mqttClient.loop() pass; queue acks so none overwrite each other.
 static const uint8_t kDeferredFilterAckCap = 16;
 static char g_deferredFilterAckQ[kDeferredFilterAckCap][48];
@@ -267,6 +272,10 @@ static uint8_t g_deferredAckHead = 0;
 static uint8_t g_deferredAckCount = 0;
 
 static void requestDeferredFilterAck(const char* correlationId) {
+  if (publishAckFilter(correlationId)) {
+    mqttClient.loop();
+    return;
+  }
   if (g_deferredAckCount >= kDeferredFilterAckCap) {
     g_deferredAckHead = (g_deferredAckHead + 1) % kDeferredFilterAckCap;
     g_deferredAckCount--;
@@ -279,9 +288,13 @@ static void requestDeferredFilterAck(const char* correlationId) {
 
 static void flushDeferredFilterAck() {
   while (g_deferredAckCount > 0 && mqttClient.connected()) {
-    publishAckFilter(g_deferredFilterAckQ[g_deferredAckHead]);
-    g_deferredAckHead = (g_deferredAckHead + 1) % kDeferredFilterAckCap;
-    g_deferredAckCount--;
+    if (publishAckFilter(g_deferredFilterAckQ[g_deferredAckHead])) {
+      g_deferredAckHead = (g_deferredAckHead + 1) % kDeferredFilterAckCap;
+      g_deferredAckCount--;
+      mqttClient.loop();
+    } else {
+      break;
+    }
   }
 }
 
@@ -760,11 +773,15 @@ void handleLedCommand(JsonDocument& doc) {
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  StaticJsonDocument<512> doc;
+  // Filter cmds (bind_ble, ble_scan, …) nest payload + long ts; 512B overflows ArduinoJson pool → no handler → no ack.
+  static StaticJsonDocument<2048> doc;
+  doc.clear();
   DeserializationError err = deserializeJson(doc, payload, length);
   if (err) {
     Serial.print("MQTT JSON parse failed on ");
-    Serial.println(topic);
+    Serial.print(topic);
+    Serial.print(": ");
+    Serial.println(err.c_str());
     return;
   }
 
@@ -1103,6 +1120,9 @@ void loop() {
   if (mqttClient.connected()) {
     mqttClient.loop();
 #if ENABLE_FILTER_BRIDGE
+    // Flush MQTT acks from callbacks (ble_scan, bind_ble, etc.) before any long GATT work,
+    // or the backend will TIMEOUT while executePendingFilterGatt blocks on BLE.
+    flushDeferredFilterAck();
     bool didFilterGatt = false;
     if (g_pendingFilterGatt) {
       g_pendingFilterGatt = false;

@@ -8,10 +8,11 @@ import {
 } from '../api'
 import { useToast } from '../contexts/ToastContext'
 
-const ACK_SHORT_MS = 8000
-const ACK_BIND_MS = 22000
-const ACK_CONNECT_MS = 35000
-const ACK_SCAN_MS = 25000
+// Must stay above server mqtt.command_timeout_seconds (default 45s) or polls see TIMEOUT before client wait ends.
+const ACK_SHORT_MS = 12000
+const ACK_BIND_MS = 52000
+const ACK_CONNECT_MS = 70000
+const ACK_SCAN_MS = 50000
 const ACK_POLL_MS = 100
 const SCAN_RESULTS_POLL_MS = 350
 const SCAN_RESULTS_WAIT_MS = 20000
